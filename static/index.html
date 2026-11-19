@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>链接抓取摘要器 · LinkReader</title>
+
+<link rel="icon" href="/static/favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
+
+<script>
+/* 外观跟随系统：日间 / 夜间由 prefers-color-scheme 决定。
+   这一段必须放在样式表之前、且在 head 里同步执行，属性在首次绘制前就写好，
+   否则会先闪一下浅色再跳成深色。 */
+(function () {
+  var mq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+
+  function current() { return mq && mq.matches ? 'dark' : 'light'; }
+
+  function paint(t) {
+    var root = document.documentElement;
+    if (root.getAttribute('data-theme') !== t) root.setAttribute('data-theme', t);
+    if (document.body) document.body.setAttribute('arco-theme', t);
+    window.__lrTheme = t;
+    try {
+      window.dispatchEvent(new CustomEvent('themechange', { detail: { theme: t } }));
+    } catch (e) { /* 老浏览器不支持 CustomEvent 构造器就算了，不影响配色 */ }
+  }
+
+  window.__lrPaintTheme = paint;
+  paint(current());
+
+  function onSys(e) { paint(e.matches ? 'dark' : 'light'); }
+  if (mq) {
+    if (mq.addEventListener) mq.addEventListener('change', onSys);
+    else if (mq.addListener) mq.addListener(onSys);   // Safari 13 及更早
+  }
+})();
+</script>
+
+<!-- Arco Design Vue 与 Vue 3 都放在本地，断网也能用 -->
+<link rel="stylesheet" href="/static/vendor/arco.min.css">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<script>
+/* body 这时才存在，把 Arco 的主题属性补上（Arco 的暗色变量挂在 body 上） */
+document.body.setAttribute('arco-theme', window.__lrTheme || 'light');
+</script>
+<div id="app"></div>
+
+<script src="/static/vendor/vue.global.prod.js"></script>
+<script src="/static/vendor/arco-vue.min.js"></script>
+<!-- 使用指南的 Markdown 解析器，也放本地 -->
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/app.js"></script>
+<!-- 心跳脚本只有 exe 启动时才真正下发，用 python 跑的时候是个空注释 -->
+<script src="/api/beat.js"></script>
+</body>
+</html>

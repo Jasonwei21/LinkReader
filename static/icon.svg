@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg3" x1="0.1" y1="0" x2="0.9" y2="1">
+      <stop offset="0" stop-color="#FCFAF5"/>
+      <stop offset="1" stop-color="#EDE6D6"/>
+    </linearGradient>
+    <linearGradient id="paper3" x1="0.1" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#E08A6B"/>
+      <stop offset="1" stop-color="#C4633F"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="512" height="512" rx="112" fill="url(#bg3)"/>
+  <rect x="1" y="1" width="510" height="510" rx="111" fill="none"
+        stroke="#141413" stroke-opacity="0.08" stroke-width="2"/>
+
+  <path d="M136 76 L292 76 L384 168 L384 352 A44 44 0 0 1 340 396
+           L136 396 A44 44 0 0 1 92 352 L92 120 A44 44 0 0 1 136 76 Z"
+        fill="url(#paper3)"/>
+  <path d="M292 76 L384 168 L292 168 Z" fill="#A9532F" fill-opacity="0.5"/>
+
+  <rect x="138" y="188" width="188" height="30" rx="15" fill="#FCFAF5"/>
+  <rect x="138" y="248" width="188" height="30" rx="15" fill="#FCFAF5"/>
+  <rect x="138" y="308" width="106" height="30" rx="15" fill="#FCFAF5"/>
+
+  <!-- 取回徽标 -->
+  <circle cx="392" cy="392" r="82" fill="#FCFAF5"/>
+  <circle cx="392" cy="392" r="82" fill="none" stroke="#141413"
+          stroke-opacity="0.06" stroke-width="3"/>
+  <g stroke="#C4633F" stroke-width="26" stroke-linecap="round"
+     stroke-linejoin="round" fill="none">
+    <path d="M392 348 L392 406"/>
+    <path d="M358 378 L392 412 L426 378"/>
+  </g>
+</svg>

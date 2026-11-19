@@ -1,0 +1,9 @@
+# 统一换行，避免 Windows 检出后 diff 全是 \r
+* text=auto eol=lf
+
+# cmd.exe 解析批处理依赖 CRLF
+*.bat text eol=crlf
+
+# 二进制资源
+*.ico binary
+*.png binary
