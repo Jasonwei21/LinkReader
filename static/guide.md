@@ -3,7 +3,7 @@
 给一批链接，自动抓正文、出摘要、译成中文，导出 txt / Markdown / Word，再给一张汇总表。
 全程跑在你自己电脑上，结果只写进本机 `out/` 目录。
 
-- **版本**　LinkReader 1.1.0-beta（内测）
+- **版本**　LinkReader 1.1.0
 - **环境**　Windows 10 / 11，不需要装 Python（用 exe），也不需要联网注册任何账号
 - **源码**　Python 标准库 + python-docx / openpyxl / pypdf；前端 Vue 3 + Arco Design Vue
 
