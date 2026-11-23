@@ -1,6 +1,7 @@
 # 运行产物
 cache/
 out/
+out-batch/
 config.json
 port.txt
 
