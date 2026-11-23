@@ -18,9 +18,9 @@
 import hashlib
 import os
 import re
-import shutil
 import subprocess
 import tempfile
+import threading
 import time
 
 CREATE_NO_WINDOW = 0x08000000
@@ -122,26 +122,6 @@ def _net_error(err_bytes):
     return code, _NET_TEXT.get(code, code)
 
 
-def _rm_tree(path):
-    """删掉一次渲染用的临时 profile。
-
-    Windows 上用 rd /s /q：Chromium profile 动辄上千个小文件，
-    交给系统删比 Python 逐个 rmtree 快得多，也不容易在半路卡住。
-    """
-    if not path or not os.path.isdir(path):
-        return
-    if os.name == "nt":
-        try:
-            subprocess.run(["cmd", "/c", "rd", "/s", "/q", path],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                           creationflags=CREATE_NO_WINDOW, timeout=30)
-            if not os.path.isdir(path):
-                return
-        except Exception:
-            pass
-    shutil.rmtree(path, ignore_errors=True)
-
-
 def _kill_tree(proc):
     """先 taskkill /T 杀整棵树，再不济 proc.kill()。"""
     try:
@@ -195,6 +175,30 @@ def _base_args(exe, profile_dir, width=1280, height=1200, budget_ms=5000):
     ]
 
 
+_TLS = threading.local()
+
+
+def _profile_for(work_dir):
+    """当前线程在这个 work_dir 下的固定渲染 profile。
+
+    Edge 的 user-data-dir 一旦建好就有几百个文件；原来每次渲染
+    mkdtemp 一个新的、用完 rmtree 删掉——整批跑下来又是几千个文件的
+    创建加删除，又慢又容易在半路卡住。现在按线程复用：Edge 退出后
+    profile 仍然有效，下次渲染直接用（预热过的 profile 起步还快些）。
+    程序内不做批量删除，profile 目录留在 _render/ 下，想清理时手动删。
+    """
+    base = work_dir or tempfile.gettempdir()
+    profs = getattr(_TLS, "profs", None)
+    if profs is None:
+        profs = _TLS.profs = {}
+    prof = profs.get(base)
+    if prof is None or not os.path.isdir(prof):
+        os.makedirs(base, exist_ok=True)
+        prof = tempfile.mkdtemp(prefix="lr-render-", dir=base)
+        profs[base] = prof
+    return prof
+
+
 def dump_dom(url, timeout=45, budget_ms=5000, width=1280, height=1200, work_dir=None, log=None):
     """渲染后取整页 HTML。返回 (html | None, note)。"""
     exe, name = find_browser()
@@ -202,7 +206,7 @@ def dump_dom(url, timeout=45, budget_ms=5000, width=1280, height=1200, work_dir=
         return None, "本机没找到 Edge / Chrome，无法渲染"
 
     for attempt in (0, 1):
-        profile = tempfile.mkdtemp(prefix="lr-render-", dir=work_dir)
+        profile = _profile_for(work_dir)
         try:
             args = _base_args(exe, profile, width, height, budget_ms) + ["--dump-dom", url]
             t0 = time.time()
@@ -236,7 +240,7 @@ def dump_dom(url, timeout=45, budget_ms=5000, width=1280, height=1200, work_dir=
                 return None, "浏览器没打开页面（无输出，多为网络或代理中断）"
             return None, "%s 渲染无结果（%s）" % (name, msg[-1][:80])
         finally:
-            _rm_tree(profile)
+            pass   # profile 按线程复用，不再逐次删除（见 _profile_for）
     return None, "浏览器渲染失败"
 
 
@@ -247,22 +251,19 @@ def screenshot(url, png_path, timeout=45, budget_ms=5000, width=1280, height=120
     if not exe:
         return False, "本机没找到 Edge / Chrome，无法截图"
 
-    profile = tempfile.mkdtemp(prefix="lr-shot-", dir=work_dir)
-    try:
-        args = _base_args(exe, profile, width, height, budget_ms) + ["--screenshot=" + png_path, url]
-        rc, out, err, timed = _run_browser(args, timeout)
-        if timed:
-            return False, "截图超时（%d 秒）" % timeout
-        if not os.path.isfile(png_path) or os.path.getsize(png_path) < 2000:
-            code, text = _net_error(err)
-            if code:
-                return False, "截图失败：%s（%s）" % (text, code)
-            return False, "%s 截图失败（rc=%s）" % (name, rc)
-        if log:
-            log("    [截图] %d 字节" % os.path.getsize(png_path))
-        return True, ""
-    finally:
-        _rm_tree(profile)
+    profile = _profile_for(work_dir)
+    args = _base_args(exe, profile, width, height, budget_ms) + ["--screenshot=" + png_path, url]
+    rc, out, err, timed = _run_browser(args, timeout)
+    if timed:
+        return False, "截图超时（%d 秒）" % timeout
+    if not os.path.isfile(png_path) or os.path.getsize(png_path) < 2000:
+        code, text = _net_error(err)
+        if code:
+            return False, "截图失败：%s（%s）" % (text, code)
+        return False, "%s 截图失败（rc=%s）" % (name, rc)
+    if log:
+        log("    [截图] %d 字节" % os.path.getsize(png_path))
+    return True, ""
 
 
 def shot(url, cache_dir, timeout=45, budget_ms=5000, width=1280, height=1200, log=None):
