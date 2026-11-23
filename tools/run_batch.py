@@ -68,16 +68,31 @@ def main():
 
     job = PL.Job(ordered, out_root, opt)
     log_path = os.path.join(job.dir, "进度.log")
+    os.makedirs(job.dir, exist_ok=True)      # Job 的目录要到 run() 才建，日志先开就得先建目录
     t0 = time.time()
+
+    # 单一持久句柄 + 锁。原来的"每次追加都重新 open"在多线程下会撞
+    # Windows 共享冲突（PermissionError），整个任务直接报异常收场。
+    import threading
+    _log_lock = threading.Lock()
+    _log_f = io.open(log_path, "a", encoding="utf-8")
 
     def log(msg):
         line = "%6.0fs   %s" % (time.time() - t0, msg)
         print(line, flush=True)
-        with io.open(log_path, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        with _log_lock:
+            try:
+                _log_f.write(line + "\n")
+                _log_f.flush()
+            except Exception:
+                pass                # 日志写不进去不能连累抓取
 
     job.log = log
     job.run()
+    try:
+        _log_f.close()
+    except Exception:
+        pass
 
     snap = job.snapshot()
     with io.open(os.path.join(job.dir, "job.json"), "w", encoding="utf-8") as f:
