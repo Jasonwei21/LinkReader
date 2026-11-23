@@ -226,7 +226,7 @@ https://dialogue.earth/en/digest/...
                     <a-checkbox v-model="pdf">PDF 兜底</a-checkbox>
                     <a-checkbox v-model="renderFB" title="反爬拦截或超时时，用本机浏览器重新打开页面取正文">渲染兜底</a-checkbox>
                     <a-checkbox v-model="ocrFB" title="渲染后仍无正文时，截图后调系统 OCR（有损，需校对）">OCR 兜底</a-checkbox>
-                    <a-checkbox v-model="visibleFB" title="无头浏览器被机器人校验拦住时，开一个真实浏览器窗口打开，取它渲染好的页面">可见窗口</a-checkbox>
+                    <a-checkbox v-model="visibleFB" title="直连失败（10 秒内连不上 / 被拦截）时，优先开一个真实浏览器窗口打开原文取页面，一次一条。关闭则走无头渲染兜底">可见窗口</a-checkbox>
                     <a-checkbox v-model="doSum">摘要</a-checkbox>
                     <a-select v-model="trans" size="small" :popup-container="'body'">
                       <a-option value="off">不翻译</a-option>
@@ -684,7 +684,7 @@ https://dialogue.earth/en/digest/...
           on: !!renderFB.value },
         { t: ocrFB.value ? 'OCR 兜底：截图识别（有损，需校对）' : 'OCR 兜底：未开启',
           on: !!ocrFB.value },
-        { t: visibleFB.value ? '可见窗口：被机器人校验拦住时开真窗口打开' : '可见窗口：未开启',
+        { t: visibleFB.value ? '可见窗口：直连失败时优先开真窗口（一次一条）' : '可见窗口：未开启，走无头渲染兜底',
           on: !!visibleFB.value },
         { t: doSum.value ? '摘要：' + (llmReady.value ? '大模型生成' : '本地提取式') : '摘要：未开启',
           on: !!doSum.value },

@@ -58,6 +58,7 @@ class _WS(object):
         rest = ws_url[5:]
         hostport, _, path = rest.partition("/")
         host, _, port = hostport.partition(":")
+        self.timeout = timeout
         self.sock = socket.create_connection((host, int(port or 80)), timeout=timeout)
         self.sock.settimeout(timeout)
         key = base64.b64encode(os.urandom(16)).decode()
@@ -146,11 +147,19 @@ class _WS(object):
 def _cdp(ws, mid, method, params=None, timeout=30):
     ws.send_text(json.dumps({"id": mid, "method": method, "params": params or {}}))
     t0 = time.time()
-    while time.time() - t0 < timeout:
-        msg = json.loads(ws.recv_text())
+    while True:
+        left = timeout - (time.time() - t0)
+        if left <= 0:
+            raise IOError("CDP 超时：%s" % method)
+        # socket 超时收紧到本次剩余时限：死页签上 recv 会一直阻塞，
+        # 只靠这里的时间判断掐不断它（实测一轮能挂满 30 秒）。
+        try:
+            ws.sock.settimeout(max(0.5, min(ws.timeout, left)))
+            msg = json.loads(ws.recv_text())
+        except socket.timeout:
+            raise IOError("CDP 超时：%s" % method)
         if msg.get("id") == mid:
             return msg
-    raise IOError("CDP 超时：%s" % method)
 
 
 def _eval(ws, mid, expr, timeout=20):
@@ -294,17 +303,36 @@ def _fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None):
         best, best_len = None, 0
         while time.time() - t0 < max_wait:
             time.sleep(settle)
+            # 15 秒了页面上还是一个字都没有：地址多半打不开
+            # （连接超时、被代理掐断），别把 max_wait 等满。
+            if time.time() - t0 > 15 and best_len == 0:
+                return None, "窗口打开 15 秒页面无内容（多半打不开）"
             try:
-                state = _eval(ws, 10, "document.readyState")
-                n = _eval(ws, 11, "(document.body?document.body.innerText.length:0)") or 0
-                title = _eval(ws, 12, "document.title") or ""
+                # 轮询求值必须短超时：死页签上 CDP 会一直挂到超时，
+                # 用默认 20 秒的话，一轮循环就是 30 多秒，15 秒判据形同虚设。
+                state = _eval(ws, 10, "document.readyState", timeout=6)
+                n = _eval(ws, 11, "(document.body?document.body.innerText.length:0)", timeout=6) or 0
+                title = _eval(ws, 12, "document.title", timeout=6) or ""
             except Exception:
                 continue
+            # 连接打不开时窗口里是 Edge 的错误页——有文字，所以上面的
+            # "无内容"判据抓不住它。文本很短时探一眼正文，认出错误页
+            # （"无法访问此页面" / ERR_xxx / can't reach）就立刻放弃。
+            if 0 < n < 600:
+                probe = _eval(ws, 13, "document.body ? document.body.innerText.slice(0,400) : ''",
+                              timeout=6) or ""
+                pl = probe.lower()
+                if ("ERR_" in probe or "无法访问此页面" in probe
+                        or "此网页无法" in probe or "can't reach this page" in pl
+                        or "hmmm…can't reach" in pl):
+                    return None, "窗口里是浏览器错误页（%s）" % (title or "ERR")[:60]
             if n > best_len:
                 best_len = n
                 best = (state, n, title)
-            # 正文够长就认为页面真的出来了
-            if (state == "complete" and n >= min_text):
+            # 正文够长就认为页面真的出来了。interactive 也收：DOM 已经
+            # 建好、正文在屏幕上了，剩下的是图片广告之类的次资源，
+            # 等它们没意义——BBC 实测要白等 30 秒才 complete。
+            if state in ("complete", "interactive") and n >= min_text:
                 break
         if log:
             log("    [可见] %.0fs readyState=%s 文本 %d 字「%s」" % (

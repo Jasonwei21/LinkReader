@@ -62,7 +62,7 @@ DEFAULT_CFG = {
     "opt": {"workers": 3, "timeout": 40, "min_chars": 400,
             "pdf_fallback": True, "strict": True,
             "render_fallback": True, "ocr_fallback": True,
-            "visible_fallback": False,
+            "visible_fallback": True,
             "summary": True, "translate": "off"},
 }
 JOBS = {}

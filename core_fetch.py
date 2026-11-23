@@ -196,6 +196,12 @@ def fetch(url, cache_dir="cache", timeout=40, retries=3, use_cache=True):
                 return None, info
         except Exception as e:
             last = "%s: %s" % (type(e).__name__, str(e)[:60])
+            # socket 超时（TimeoutError）不走 URLError 分支，会落到这里；
+            # 它同样是"连不上"，重试只会把 10 秒变成 30 多秒。
+            if _local_net_fail(str(e)):
+                info["note"] = last
+                info["local_net_fail"] = True
+                return None, info
         time.sleep(1.2 * (i + 1))
     info["note"] = last
     return None, info

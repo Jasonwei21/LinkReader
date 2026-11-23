@@ -217,9 +217,9 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
 
     mark("等待同站名额")
     sem = _slot(host_of(url))
-    # 有渲染兜底时，直连不必耗满 timeout：连不上就赶快交给浏览器。
-    # 用户设 20 秒时，原来光"确认连不上"就要 20 秒，再加上重试更久。
-    direct_timeout = min(timeout, 12) if render_fallback else timeout
+    # 有兜底时直连只给 10 秒：连不上就交给浏览器，别在"确认连不上"
+    # 上耗时间。两个兜底都没开时才用满 timeout。
+    direct_timeout = min(timeout, 10) if (render_fallback or visible_fallback) else timeout
     block = ""
     with sem:
         mark("直连抓取")
@@ -245,97 +245,105 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
         elif parsed["chars"] < min_chars and _looks_scripted(page_raw):
             need, why = True, "正文仅 %d 字符，页面里有脚本" % parsed["chars"]
 
-        if need and render_fallback and not url.lower().endswith(".pdf"):
-            say("    [兜底] %s → 改用浏览器渲染" % why)
-            mark("浏览器渲染")
-            t0 = time.time()
-            rr = RF.render(url, cache_dir, want_shot=False,
-                           timeout=max(min(timeout, 25), 18), log=say)
-            note("渲染", t0, bool(rr["raw"]), rr.get("note", ""))
-
-            if rr["raw"]:
-                p2 = _analyze(rr["raw"], url, cache_dir, pdf_fallback, 200)
-                b2 = LF.detect_block(rr["raw"]) if p2["chars"] < min_chars else ""
-                if b2:
-                    # 浏览器也撞上了机器人校验：到此为止，不 OCR、不重试。
-                    block = b2
-                    parsed = None
-                elif p2["wall"]:
-                    parsed = p2                           # 渲染后才看清是墙，照样按墙处理
-                    rec["via"] = "render"
-                elif parsed is None or p2["chars"] > parsed["chars"]:
-                    parsed = p2
-                    page_raw = rr["raw"]
-                    rec["via"] = "render"
-                    rec["http"] = 200
-
-            # ---- 渲染出 HTML 仍拿不到正文，才截图 OCR
-            # 截图要 15 秒上下，DOM 里已经有正文时就不截，省掉这一趟。
-            # 页面压根没打开（rr 没有 raw）时也不截：那只会得到一张空白图。
-            # ---- 可见窗口：无头被机器人校验挡住时，用真窗口打开同一个地址。
-            # 只取"已经渲染出来的页面"，不做任何对抗性处理。
+        vis_used = False
+        rr = None
+        if need and not url.lower().endswith(".pdf"):
+            gate_open = (not visible_gate) or visible_gate.allow()
+            # ---- 一级兜底：真实窗口。开了可见窗口且没被熔断时，它优先于无头渲染：
+            # 同一个浏览器，真实模式比无头更不容易被识别，实测 2 秒就能拿一条。
             # 窗口一次只开一条（visible_fetch 内部有全局锁），失败不重试、
             # 任务继续下一条；连续 3 次失败后本批关闭窗口兜底（_VisGate）。
-            vis_ok = False
-            if visible_fallback and (block or parsed is None
-                                     or (parsed and parsed["chars"] < min_chars)):
-                if visible_gate and not visible_gate.allow():
-                    say("    [可见] 窗口已连续失败，本批跳过窗口兜底")
-                else:
-                    mark("可见窗口")
-                    t0 = time.time()
-                    vh, vnote = VF.fetch(url, cache_dir, log=say)
-                    if vh:
-                        p3 = _analyze(vh, url, cache_dir, pdf_fallback, 200)
-                        b3 = LF.detect_block(vh) if p3["chars"] < min_chars else ""
-                        if b3:
-                            block = b3          # 取回来的还是拦截页：算窗口失败
-                        elif p3["chars"] > (parsed["chars"] if parsed else 0):
-                            parsed = p3
-                            page_raw = vh
-                            rec["via"] = "visible"
-                            rec["http"] = 200
-                            block = ""
-                            vis_ok = True
-                        else:
-                            vis_ok = True       # 内容没更好，但窗口本身是通的
-                    note("可见窗口", t0, vis_ok, vnote)
-                    if visible_gate:
-                        visible_gate.record(vis_ok)
-
-            best = parsed["chars"] if parsed else 0
-            # 拦截页/空白页不做 OCR：那只会把"Access Denied"几个字认出来，
-            # 既浪费时间又给不出可用语料。
-            ocr_worth = bool(rr["raw"]) and not block and best >= 120
-            if ocr_fallback and ocr_worth and best < min_chars:
-                mark("截图")
+            if visible_fallback and gate_open:
+                mark("可见窗口")
                 t0 = time.time()
-                shot_path, shot_note = RF.shot(url, cache_dir,
-                                               timeout=max(min(timeout, 25), 18), log=say)
-                note("截图", t0, bool(shot_path), shot_note or "")
-                if not shot_path:
-                    render_note = shot_note
-                else:
-                    mark("识别文字")
-                    t1 = time.time()
-                    orc = OW.ocr_image(shot_path)
-                    ob = OW.blocks_from_ocr(orc, title=(parsed or {}).get("title", ""))
-                    oc = sum(len(t) for _, t in ob)
-                    note("OCR", t1, oc > best,
-                         orc.get("error") or "%d 字符" % oc)
-                    if oc > best:
-                        base = parsed or {"meta": {}, "title": "", "wall": False,
-                                          "kind": "", "ev": "", "pdf_note": ""}
-                        parsed = dict(base, blocks=ob, chars=oc, wall=False)
-                        rec["via"] = "ocr"
-                        rec["shot"] = shot_path
-                        rec["needs_review"] = True
-                        page_lang = LF.guess_lang(" ".join(t for _, t in ob)[:3000])
-                        render_note = OW.quality_note(orc, page_lang)
-                        say("    [兜底] 截图 OCR 取到 %d 字符（%s）" % (oc, orc.get("lang") or "?"))
+                vh, vnote = VF.fetch(url, cache_dir, log=say)
+                vis_ok = False
+                if vh:
+                    p3 = _analyze(vh, url, cache_dir, pdf_fallback, 200)
+                    b3 = LF.detect_block(vh) if p3["chars"] < min_chars else ""
+                    if b3:
+                        block = b3          # 取回来的还是拦截页：算窗口失败
+                    elif p3["chars"] > (parsed["chars"] if parsed else 0):
+                        parsed = p3
+                        page_raw = vh
+                        rec["via"] = "visible"
+                        rec["http"] = 200
+                        block = ""
+                        vis_ok = True
+                    else:
+                        vis_ok = True       # 内容没更好，但窗口本身是通的
+                note("可见窗口", t0, vis_ok, vnote)
+                if visible_gate:
+                    visible_gate.record(vis_ok)
+                if not vis_ok:
+                    render_note = render_note or vnote
+                vis_used = True
+            elif visible_fallback and not gate_open:
+                say("    [可见] 窗口已连续失败，本批跳过窗口兜底")
 
-            if parsed is None or parsed["chars"] < min_chars:
-                render_note = render_note or rr.get("note", "")
+            # ---- 二级兜底：无头渲染。真实窗口刚试过就不再试无头——同一个
+            # 网络环境，真窗口都进不去的地方无头只会更进不去；
+            # 窗口没开（未启用或被熔断）时它才是主力。
+            if need and not vis_used and render_fallback:
+                say("    [兜底] %s → 改用浏览器渲染" % why)
+                mark("浏览器渲染")
+                t0 = time.time()
+                rr = RF.render(url, cache_dir, want_shot=False,
+                               timeout=max(min(timeout, 25), 18), log=say)
+                note("渲染", t0, bool(rr["raw"]), rr.get("note", ""))
+
+                if rr["raw"]:
+                    p2 = _analyze(rr["raw"], url, cache_dir, pdf_fallback, 200)
+                    b2 = LF.detect_block(rr["raw"]) if p2["chars"] < min_chars else ""
+                    if b2:
+                        # 浏览器也撞上了机器人校验：到此为止，不 OCR、不重试。
+                        block = b2
+                        parsed = None
+                    elif p2["wall"]:
+                        parsed = p2                       # 渲染后才看清是墙，照样按墙处理
+                        rec["via"] = "render"
+                    elif parsed is None or p2["chars"] > parsed["chars"]:
+                        parsed = p2
+                        page_raw = rr["raw"]
+                        rec["via"] = "render"
+                        rec["http"] = 200
+
+                # ---- 渲染出 HTML 仍拿不到正文，才截图 OCR
+                # 截图要 15 秒上下，DOM 里已经有正文时就不截，省掉这一趟。
+                # 页面压根没打开（rr 没有 raw）时也不截：那只会得到一张空白图。
+                best = parsed["chars"] if parsed else 0
+                # 拦截页/空白页不做 OCR：那只会把"Access Denied"几个字认出来，
+                # 既浪费时间又给不出可用语料。
+                ocr_worth = bool(rr["raw"]) and not block and best >= 120
+                if ocr_fallback and ocr_worth and best < min_chars:
+                    mark("截图")
+                    t0 = time.time()
+                    shot_path, shot_note = RF.shot(url, cache_dir,
+                                                   timeout=max(min(timeout, 25), 18), log=say)
+                    note("截图", t0, bool(shot_path), shot_note or "")
+                    if not shot_path:
+                        render_note = shot_note
+                    else:
+                        mark("识别文字")
+                        t1 = time.time()
+                        orc = OW.ocr_image(shot_path)
+                        ob = OW.blocks_from_ocr(orc, title=(parsed or {}).get("title", ""))
+                        oc = sum(len(t) for _, t in ob)
+                        note("OCR", t1, oc > best,
+                             orc.get("error") or "%d 字符" % oc)
+                        if oc > best:
+                            base = parsed or {"meta": {}, "title": "", "wall": False,
+                                              "kind": "", "ev": "", "pdf_note": ""}
+                            parsed = dict(base, blocks=ob, chars=oc, wall=False)
+                            rec["via"] = "ocr"
+                            rec["shot"] = shot_path
+                            rec["needs_review"] = True
+                            page_lang = LF.guess_lang(" ".join(t for _, t in ob)[:3000])
+                            render_note = OW.quality_note(orc, page_lang)
+                            say("    [兜底] 截图 OCR 取到 %d 字符（%s）" % (oc, orc.get("lang") or "?"))
+
+                if parsed is None or parsed["chars"] < min_chars:
+                    render_note = render_note or rr.get("note", "")
 
     rec["render_note"] = render_note
     rec["trace"] = trace
