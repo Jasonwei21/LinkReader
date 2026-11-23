@@ -101,6 +101,12 @@ def fetch(url, cache_dir="cache", timeout=40, retries=3, use_cache=True):
                 with open(fn, "w", encoding="utf-8") as f:
                     f.write(raw)
                 return raw, info
+            if raw:
+                # 短页面不缓存，但必须交回上层再判一次。
+                # 付费墙/登录页常常只有一两百字节，如果在这里直接判失败，
+                # 订阅墙会被误当成"技术性故障"，进而错误地掉进渲染兜底。
+                info["note"] = "页面较短（%d 字节）" % len(raw)
+                return raw, info
             last = "页面过短 %d 字节" % len(raw)
         except urllib.error.HTTPError as e:
             info["status"] = e.code

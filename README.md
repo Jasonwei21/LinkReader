@@ -188,17 +188,37 @@ out/20261118-214018/
 
 | 状态 | 含义 | 处理 |
 |---|---|---|
-| 已抓取 | 公开可读 | 正常输出 |
+| 已抓取 | 公开可读（含渲染 / OCR 取得） | 正常输出 |
 | 订阅墙 | 付费/登录/计量墙 | 严格模式跳过，宽松模式保留并标注 |
-| 拦截 | HTTP 403 / 429 反爬 | 跳过（无法验证可读性） |
+| 拦截 | HTTP 403 / 429，且渲染兜底也没拿到正文 | 跳过 |
 | 过短 | 正文不足 `min_chars` | 多是栏目页或加载失败 |
-| 失败 | 连接不上 | 见下 |
+| 失败 | 连接不上，且兜底也失败 | 见下 |
 
 `detect_wall` 的判定依据：结构化标记 `isAccessibleForFree:false` 且正文很短、页面有订阅
 文案且正文不足 1800 字符、被重定向到登录页、声明字数和实际字数严重不符。
 
-**「连接失败（Tunnel connection failed）」不是网站的问题**，是本机网络/代理限制。
-FT、Economist、Bloomberg 这类站经常整站连不上，换网络重跑即可；已抓到的走缓存不重复请求。
+### 抓不到时的三级降级
+
+```
+① urllib 直接请求  →  ② 本机 Edge/Chrome 无头渲染取 DOM  →  ③ 截图 + Windows OCR
+```
+
+| 级别 | 触发条件 | 输出质量 | 依赖 |
+|---|---|---|---|
+| ① 直接请求 | 总是先试 | 原文 100% | 无 |
+| ② 浏览器渲染 | 超时 / 403 / 429 / 正文由 JS 插入 | 原文 100%，与 ① 一致 | 本机 Edge 或 Chrome |
+| ③ 截图 OCR | ② 也抽不出正文（canvas 绘字、字体混淆） | 有损，标「OCR 待校」 | 同上 + OCR 语言包 |
+
+**订阅墙不进入降级。** 识别到就跳过，后两级不会启动——这是硬边界，写死在代码里，不是配置项。
+渲染后的 HTML 会再跑一次 `detect_wall`，防止"先渲染、后付费"的情况漏过去。
+
+② 顺带解决一类隐蔽问题：`urllib` 不读 Windows 的系统代理设置，浏览器会读。所以
+「Python 抓不到、浏览器打得开」经常不是反爬，是代理没走到，② 一步就过。
+
+③ 的已知缺陷：Windows 默认只带系统语言的 OCR 包（中文系统通常 `zh-Hans-CN`、`ja`），
+没有 `en` 时识别英文会出现大小写与形近字错误（`permission` 会被认成 `permiSSiOn`）。
+可以在「设置 → 时间和语言 → 语言」里加装英语（美国）语言包改善。OCR 结果一律带
+`needs_review` 标记，别直接当语料用。
 
 日期只从结构化字段（`datePublished`、`article:published_time` 等）和明确的发布时间标签取，
 认不出来的留空，不猜。
@@ -214,6 +234,10 @@ FT、Economist、Bloomberg 这类站经常整站连不上，换网络重跑即�
 | workers | 3 | 并发数，1–6。同一站点最多同时 2 个请求 |
 | timeout | 40 | 单页超时（秒） |
 | min_chars | 400 | 正文低于这个字符数算「过短」 |
+| strict | true | 严格模式：识别到订阅墙直接跳过 |
+| pdf_fallback | true | PDF 兜底：正文在附件里时去取 PDF |
+| render_fallback | true | 渲染兜底：超时 / 403 / JS 空壳时用本机浏览器重取 |
+| ocr_fallback | true | OCR 兜底：渲染仍无正文时截图识别（有损，需校对） |
 | summary | true | 是否生成摘要 |
 | translate | off | off / zh / both |
 
@@ -236,6 +260,8 @@ FT、Economist、Bloomberg 这类站经常整站连不上，换网络重跑即�
 | `translator.py` | 全文翻译（分段、对齐、失败兜底） |
 | `llm.py` | OpenAI 兼容接口封装，摘要和翻译共用 |
 | `core_fetch.py` | 正文抽取、墙检测、PDF 兜底 |
+| `render_fetch.py` | 调用本机 Edge / Chrome 无头渲染，取渲染后的 DOM 或截图 |
+| `ocr_win.py` | 调 Windows 自带 OCR 识别截图（PowerShell 拉起，不打包第三方 OCR） |
 | `docx_out.py` | Word / Markdown 渲染 |
 | `check_env.py` | 环境自检 |
 | `static/` | 前端页面（`index.html` / `app.js` / `style.css`） |

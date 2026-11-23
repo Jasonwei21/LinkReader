@@ -40,7 +40,11 @@
 
   function pillOf(it) {
     const s = it.status || '';
-    if (s === '完成') return { cls: 'ok', text: '完成' };
+    if (s === '完成' || s === '已抓取') {
+      if (it.needs_review) return { cls: 'review', text: 'OCR 待校' };
+      if (it.via === 'render') return { cls: 'ok', text: '渲染取得' };
+      return { cls: 'ok', text: '完成' };
+    }
     if (s === '排队中') return { cls: 'queued', text: '排队' };
     for (let i = 0; i < BUSY_PREFIX.length; i++) {
       if (s.indexOf(BUSY_PREFIX[i]) === 0) return { cls: 'busy', text: s };
@@ -210,6 +214,8 @@ https://dialogue.earth/en/digest/...
                   <div class="opts">
                     <a-checkbox v-model="strict">严格模式</a-checkbox>
                     <a-checkbox v-model="pdf">PDF 兜底</a-checkbox>
+                    <a-checkbox v-model="renderFB" title="反爬拦截或超时时，用本机浏览器重新打开页面取正文">渲染兜底</a-checkbox>
+                    <a-checkbox v-model="ocrFB" title="渲染后仍无正文时，截图后调系统 OCR（有损，需校对）">OCR 兜底</a-checkbox>
                     <a-checkbox v-model="doSum">摘要</a-checkbox>
                     <a-select v-model="trans" size="small" :popup-container="'body'">
                       <a-option value="off">不翻译</a-option>
@@ -217,7 +223,7 @@ https://dialogue.earth/en/digest/...
                       <a-option value="both">中英对照</a-option>
                     </a-select>
                   </div>
-                  <a-button type="primary" :disabled="!urls.length" @click="start">开始抓取</a-button>
+                  <a-button class="go" type="primary" :disabled="!urls.length" @click="start">开始抓取</a-button>
                 </div>
                 <p class="imp-note" v-if="importNote">
                   <i v-html="icon.sheet"></i><span>{{ importNote }}</span>
@@ -546,6 +552,8 @@ https://dialogue.earth/en/digest/...
       const raw = ref('');
       const strict = ref(true);
       const pdf = ref(true);
+      const renderFB = ref(true);
+      const ocrFB = ref(true);
       const doSum = ref(true);
       const trans = ref('off');
 
@@ -650,6 +658,10 @@ https://dialogue.earth/en/digest/...
       const cfgChecks = computed(() => [
         { t: '严格模式：订阅墙与栏目页直接跳过', on: !!strict.value },
         { t: 'PDF 兜底：正文在附件里时去取 PDF', on: !!pdf.value },
+        { t: renderFB.value ? '渲染兜底：反爬/超时时用本机浏览器重取' : '渲染兜底：未开启',
+          on: !!renderFB.value },
+        { t: ocrFB.value ? 'OCR 兜底：截图识别（有损，需校对）' : 'OCR 兜底：未开启',
+          on: !!ocrFB.value },
         { t: doSum.value ? '摘要：' + (llmReady.value ? '大模型生成' : '本地提取式') : '摘要：未开启',
           on: !!doSum.value },
         { t: trans.value === 'off' ? '翻译：不翻译'
@@ -996,6 +1008,8 @@ https://dialogue.earth/en/digest/...
           keyInput.value = '';
           if (typeof c.opt.strict === 'boolean') strict.value = c.opt.strict;
           if (typeof c.opt.pdf_fallback === 'boolean') pdf.value = c.opt.pdf_fallback;
+          if (typeof c.opt.render_fallback === 'boolean') renderFB.value = c.opt.render_fallback;
+          if (typeof c.opt.ocr_fallback === 'boolean') ocrFB.value = c.opt.ocr_fallback;
           if (typeof c.opt.summary === 'boolean') doSum.value = c.opt.summary;
           if (c.opt.translate) trans.value = c.opt.translate;
         } catch (e) { /* 首次运行没有 config.json，用默认值 */ }
@@ -1016,6 +1030,8 @@ https://dialogue.earth/en/digest/...
               min_chars: cfg.opt.min_chars,
               strict: strict.value,
               pdf_fallback: pdf.value,
+              render_fallback: renderFB.value,
+              ocr_fallback: ocrFB.value,
               summary: doSum.value,
               translate: trans.value,
             },
@@ -1123,6 +1139,8 @@ https://dialogue.earth/en/digest/...
               opt: {
                 strict: strict.value,
                 pdf_fallback: pdf.value,
+                render_fallback: renderFB.value,
+                ocr_fallback: ocrFB.value,
                 summary: doSum.value,
                 translate: trans.value,
                 workers: cfg.opt.workers,
@@ -1207,6 +1225,7 @@ https://dialogue.earth/en/digest/...
 
       return {
         icon: ICON, ver: VER, view, filter, q, cfgOpen, raw, strict, pdf, doSum, trans,
+        renderFB, ocrFB,
         guideOpen, guideHtml, guideToc, guideActive, guideBody,
         openGuide, onGuideScroll, jumpGuide,
         job, sel, history, urls, running, pct, stateText, stateCls, counts,

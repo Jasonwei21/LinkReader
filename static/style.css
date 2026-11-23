@@ -36,6 +36,8 @@
   --bad-soft: rgba(174, 75, 58, .10);
   --bad-line: rgba(174, 75, 58, .26);
   --warn: #8d6519;
+  --warn-soft: rgba(200, 150, 45, .12);
+  --warn-line: rgba(200, 150, 45, .38);
 
   --field: #fffefb;
   --shadow: 0 10px 26px rgba(72, 62, 44, .16);
@@ -91,6 +93,8 @@ html[data-theme="dark"] {
   --bad-soft: rgba(207, 114, 100, .13);
   --bad-line: rgba(207, 114, 100, .3);
   --warn: #d6a75f;
+  --warn-soft: rgba(214, 167, 95, .13);
+  --warn-line: rgba(214, 167, 95, .34);
 
   --field: #201e1b;
   --shadow: 0 8px 26px rgba(0, 0, 0, .5);
@@ -635,7 +639,11 @@ code {
   gap: 12px;
   padding: 9px 11px;
   border-top: 1px solid var(--line);
+  flex-wrap: wrap;
 }
+
+/* 「开始抓取」始终留在第一行最右，选项多到换行也不把它推走 */
+.composer-bar .go { margin-left: auto; }
 
 .cnt { font-size: 11.5px; color: var(--ink-4); white-space: nowrap; }
 .cnt b { color: var(--ink-2); font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -644,8 +652,12 @@ code {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-left: auto;
   flex-wrap: wrap;
+  /* 选项有六个了，挤在一行会把按钮和下拉一起搞乱，索性单独占一行 */
+  flex: 1 0 100%;
+  order: 3;
+  margin-left: 0;
+  padding-top: 2px;
 }
 .opts .arco-checkbox { font-size: 12px; }
 .opts .arco-select { width: 110px; }
@@ -867,6 +879,13 @@ code {
   background: transparent;
 }
 .pill.bad { color: var(--bad); border-color: var(--bad-line); background: var(--bad-soft); }
+
+/* OCR 兜底拿到的正文是有损的，标签要用警示色提醒人工校对 */
+.pill.review {
+  color: var(--warn, #B8781F);
+  border-color: var(--warn-line, #E4C48A);
+  background: var(--warn-soft, #FBF2DF);
+}
 
 .c-body {
   padding: 11px 13px 13px 31px;

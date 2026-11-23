@@ -24,7 +24,7 @@ def need(mod):
 def files():
     need_files = ["app.py", "launch.py", "pipeline.py", "summarizer.py",
                   "translator.py", "llm.py", "core_fetch.py", "docx_out.py",
-                  "sheet_links.py",
+                  "sheet_links.py", "render_fetch.py", "ocr_win.py",
                   "static/index.html", "static/style.css", "static/app.js",
                   "static/guide.md", "static/favicon.ico", "static/icon-mark.svg",
                   "static/vendor/vue.global.prod.js",
@@ -51,6 +51,25 @@ def vendor_test():
             raise RuntimeError("%s 缺失或损坏（%d 字节）" % (name, n))
         out.append("%s %.0fKB" % (name, n / 1024.0))
     return "，".join(out)
+
+
+def render_test():
+    """渲染兜底靠本机浏览器。缺了不算失败——只是这一级降级失效，其余功能照常。"""
+    import render_fetch as RF
+    exe, name = RF.find_browser()
+    if not exe:
+        return "未找到 Edge / Chrome（渲染兜底失效，其余功能不受影响）"
+    return "%s 可用" % name
+
+
+def ocr_test():
+    """系统 OCR 同理：没有识别包就退化，不影响主流程。"""
+    import ocr_win as OW
+    langs = OW.languages()
+    if not langs:
+        return "系统 OCR 不可用（缺识别语言包，OCR 兜底失效）"
+    tip = "" if any(x.lower().startswith("en") for x in langs) else "，缺 en 包，识别英文易错"
+    return "识别语言 " + "、".join(langs) + tip
 
 
 def html_refs():
@@ -208,6 +227,8 @@ def main():
     chk("程序文件", files)
     chk("前端资源", vendor_test)
     chk("页面引用", html_refs)
+    chk("渲染兜底（浏览器）", render_test)
+    chk("OCR 兜底（系统识别包）", ocr_test)
     chk("使用指南", guide_test)
     chk("中文摘要", summary_test)
     chk("英文摘要", en_summary_test)

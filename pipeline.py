@@ -9,6 +9,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import core_fetch as LF
 import docx_out as DX
+import ocr_win as OW
+import render_fetch as RF
 import summarizer as SZ
 import translator as TR
 
@@ -91,24 +93,12 @@ def _pdf_sidecar(raw, blocks, url, cache_dir):
     return None, ""
 
 
-def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
-              strict=True, log=None):
-    """抓一条。返回 rec（ok=True 表示可用）。"""
-    rec = {
-        "url": url, "ok": False, "status": "", "reason": "", "wall": False,
-        "title": "", "author": "", "site": "", "date": "", "lang": "",
-        "chars": 0, "n_blocks": 0, "blocks": [], "from_pdf": False, "http": None,
-    }
-    sem = _slot(host_of(url))
-    with sem:
-        raw, info = LF.fetch(url, cache_dir, timeout=timeout)
-    rec["http"] = info.get("status")
+def _analyze(raw, url, cache_dir, pdf_fallback=True, status=None):
+    """解析一段 HTML：标题、正文块、订阅墙判定。返回 dict。
 
-    if not raw:
-        rec["status"] = "失败"
-        rec["reason"] = "抓取失败：%s" % (info.get("note") or "无响应")
-        return rec
-
+    抽成函数是为了让"原始抓取"和"浏览器渲染"两段 HTML 能走同一套判定，
+    尤其是 detect_wall 必须对渲染后的 HTML 再跑一次。
+    """
     meta = LF.meta_of(raw, url)
     title = meta["title"] or ""
     blocks = LF.blocks_from_html(raw, title, junk=LF.junk_texts(raw))
@@ -120,44 +110,141 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
             blocks = alt
             chars = sum(len(t) for _, t in alt)
 
-    wall, kind, ev = LF.detect_wall(raw, meta, blocks, status=info.get("status"))
+    wall, kind, ev = LF.detect_wall(raw, meta, blocks, status=status)
 
+    pdf_note = ""
     if not wall and chars < 2500 and pdf_fallback and not url.lower().endswith(".pdf"):
         pb, how = _pdf_sidecar(raw, blocks, url, cache_dir)
         if pb:
             blocks = pb
             chars = sum(len(t) for _, t in blocks)
-            rec["from_pdf"] = True
-            rec["reason"] = how
+            pdf_note = how
 
-    body = " ".join(t for _, t in blocks)
+    return {
+        "meta": meta, "title": title, "blocks": blocks, "chars": chars,
+        "wall": wall, "kind": kind, "ev": ev, "pdf_note": pdf_note,
+    }
+
+
+def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
+              strict=True, log=None, render_fallback=True, ocr_fallback=True):
+    """抓一条。返回 rec（ok=True 表示可用）。
+
+    三级降级：
+        1. 直接 HTTP 抓取（最快，正文最准）
+        2. 失败于技术性阻碍（超时 / 403 / 429 / JS 空壳）-> 本机浏览器渲染后取 DOM
+        3. 渲染后仍抽不出正文（canvas 绘字、字体混淆）-> 截图 + 系统 OCR
+    订阅墙/付费墙一律不进入降级：识别到就标记跳过，这是硬边界。
+    """
+    rec = {
+        "url": url, "ok": False, "status": "", "reason": "", "wall": False,
+        "title": "", "author": "", "site": "", "date": "", "lang": "",
+        "chars": 0, "n_blocks": 0, "blocks": [], "from_pdf": False, "http": None,
+        "via": "http", "needs_review": False, "shot": "", "render_note": "",
+    }
+    say = log or (lambda s: None)
+    page_raw = ""
+    render_note = ""
+
+    sem = _slot(host_of(url))
+    with sem:
+        raw, info = LF.fetch(url, cache_dir, timeout=timeout)
+        rec["http"] = info.get("status")
+        page_raw = raw or ""
+        parsed = _analyze(page_raw, url, cache_dir, pdf_fallback, info.get("status")) if raw else None
+
+        # ---- 判断要不要降级：只认技术性阻碍
+        need, why = False, ""
+        if parsed is None:
+            need, why = True, info.get("note") or "无响应"
+        elif parsed["wall"]:
+            need = False                                  # 订阅墙：绝不渲染
+        elif info.get("status") in (403, 429):
+            need, why = True, "HTTP %s" % info["status"]
+        elif parsed["chars"] < min_chars and len(page_raw) > 5000:
+            need, why = True, "正文仅 %d 字符" % parsed["chars"]
+
+        if need and render_fallback and not url.lower().endswith(".pdf"):
+            say("    [兜底] %s → 改用浏览器渲染" % why)
+            rr = RF.render(url, cache_dir, want_shot=ocr_fallback,
+                           timeout=max(timeout, 45), log=say)
+
+            if rr["raw"]:
+                p2 = _analyze(rr["raw"], url, cache_dir, pdf_fallback, 200)
+                if p2["wall"]:
+                    parsed = p2                           # 渲染后才看清是墙，照样按墙处理
+                    rec["via"] = "render"
+                elif parsed is None or p2["chars"] > parsed["chars"]:
+                    parsed = p2
+                    page_raw = rr["raw"]
+                    rec["via"] = "render"
+                    rec["http"] = 200
+
+            # ---- 渲染出 HTML 仍拿不到正文，才上 OCR
+            if ocr_fallback and rr["shot"]:
+                best = parsed["chars"] if parsed else 0
+                if best < min_chars:
+                    orc = OW.ocr_image(rr["shot"])
+                    ob = OW.blocks_from_ocr(orc, title=(parsed or {}).get("title", ""))
+                    oc = sum(len(t) for _, t in ob)
+                    if oc > best:
+                        base = parsed or {"meta": {}, "title": "", "wall": False,
+                                          "kind": "", "ev": "", "pdf_note": ""}
+                        parsed = dict(base, blocks=ob, chars=oc, wall=False)
+                        rec["via"] = "ocr"
+                        rec["shot"] = rr["shot"]
+                        rec["needs_review"] = True
+                        page_lang = LF.guess_lang(" ".join(t for _, t in ob)[:3000])
+                        render_note = OW.quality_note(orc, page_lang)
+                        say("    [兜底] 截图 OCR 取到 %d 字符（%s）" % (oc, orc.get("lang") or "?"))
+
+            if parsed is None or parsed["chars"] < min_chars:
+                render_note = render_note or rr.get("note", "")
+
+    rec["render_note"] = render_note
+    if parsed["pdf_note"]:
+        rec["from_pdf"] = True
+
+    if parsed is None:
+        rec["status"] = "失败"
+        rec["reason"] = "抓取失败：%s" % (info.get("note") or "无响应")
+        if render_note:
+            rec["reason"] += "；渲染也没成功：%s" % render_note
+        return rec
+
+    body = " ".join(t for _, t in parsed["blocks"])
+    meta = parsed["meta"]
     rec.update({
-        "title": title, "author": meta["author"],
-        "site": meta["site"] or host_of(url), "date": meta["date"],
-        "lang": LF.guess_lang(body or LF.visible_text(raw)[:4000]),
-        "chars": chars, "n_blocks": len(blocks), "blocks": blocks,
-        "wall": bool(wall),
+        "title": parsed["title"], "author": meta.get("author", ""),
+        "site": meta.get("site") or host_of(url), "date": meta.get("date", ""),
+        "lang": LF.guess_lang(body or LF.visible_text(page_raw)[:4000]),
+        "chars": parsed["chars"], "n_blocks": len(parsed["blocks"]),
+        "blocks": parsed["blocks"], "wall": bool(parsed["wall"]),
     })
 
-    if info.get("status") in (403, 429):
-        rec["status"] = "拦截"
-        rec["reason"] = "反爬拦截 HTTP %s" % info["status"]
-        return rec
-    if wall and strict:
+    if parsed["wall"] and strict:
         rec["status"] = "订阅墙"
-        rec["reason"] = "订阅墙（%s），未抓取" % kind
+        rec["reason"] = "订阅墙（%s），未抓取" % parsed["kind"]
         return rec
-    if chars < min_chars:
+    if parsed["chars"] < min_chars:
         rec["status"] = "过短"
-        rec["reason"] = "正文仅 %d 字符，可能是栏目页或加载失败" % chars
+        rec["reason"] = "正文仅 %d 字符，可能是栏目页或加载失败" % parsed["chars"]
+        if info.get("status") in (403, 429) and rec["via"] == "http":
+            rec["status"] = "拦截"
+            rec["reason"] = "反爬拦截 HTTP %s，浏览器渲染也没取到正文" % info["status"]
         return rec
 
     rec["ok"] = True
     rec["status"] = "已抓取"
-    if wall:
-        rec["reason"] = "订阅墙（%s），按宽松模式保留" % kind
-    elif rec["reason"]:
-        pass
+
+    if parsed["wall"]:
+        rec["reason"] = "订阅墙（%s），按宽松模式保留" % parsed["kind"]
+    elif rec["via"] == "ocr":
+        rec["reason"] = rec["render_note"] or "OCR 识别，需校对"
+    elif rec["via"] == "render":
+        rec["reason"] = "公开可读（浏览器渲染取得）"
+    elif parsed["pdf_note"]:
+        rec["reason"] = parsed["pdf_note"]
     else:
         rec["reason"] = "公开可读" + ("（PDF 全文）" if rec["from_pdf"] else "")
     return rec
@@ -258,7 +345,8 @@ class Job(object):
         self.items = [{"idx": i + 1, "url": u, "status": "排队中", "title": "",
                        "chars": 0, "summary": "", "reason": "", "file": "",
                        "translated": False, "site": "", "date": "",
-                       "keywords": [], "summary_how": "", "docx_file": ""}
+                       "keywords": [], "summary_how": "", "docx_file": "",
+                       "via": "http", "needs_review": False}
                       for i, u in enumerate(urls)]
         self.done = 0
         self.t0 = time.time()
@@ -312,15 +400,21 @@ class Job(object):
                             timeout=int(self.opt.get("timeout") or 40),
                             min_chars=int(self.opt.get("min_chars") or 400),
                             pdf_fallback=bool(self.opt.get("pdf_fallback", True)),
-                            strict=bool(self.opt.get("strict", True)))
+                            strict=bool(self.opt.get("strict", True)),
+                            render_fallback=bool(self.opt.get("render_fallback", True)),
+                            ocr_fallback=bool(self.opt.get("ocr_fallback", True)),
+                            log=getattr(self, "log", None))
             with self.lock:
                 results[i] = rec
             if not rec["ok"]:
                 self._set(i, status=rec["status"], reason=rec["reason"],
-                          title=rec.get("title") or "", chars=rec.get("chars", 0))
+                          title=rec.get("title") or "", chars=rec.get("chars", 0),
+                          via=rec.get("via", "http"),
+                          needs_review=bool(rec.get("needs_review")))
             else:
                 self._set(i, status="已抓取", title=rec["title"], chars=rec["chars"],
-                          reason=rec["reason"])
+                          reason=rec["reason"], via=rec.get("via", "http"),
+                          needs_review=bool(rec.get("needs_review")))
             with self.lock:
                 self.done += 1
             return rec
