@@ -175,6 +175,15 @@ def fetch(url, cache_dir="cache", timeout=40, retries=3, use_cache=True):
         except urllib.error.HTTPError as e:
             info["status"] = e.code
             last = "HTTP %s" % e.code
+            # 403/410 这类的响应体要交回去：里面常常就是 Access Denied /
+            # 机器人校验页，上层要靠它区分"站点拦截"和"代理拒绝"，
+            # 前者直接剔除，后者才值得进兜底。
+            try:
+                body = e.read()
+                if body and len(body) < 200000:
+                    return body.decode("utf-8", "ignore"), info
+            except Exception:
+                pass
             # 4xx 除 429 外不必重试
             if e.code not in (408, 429) and 400 <= e.code < 500:
                 break

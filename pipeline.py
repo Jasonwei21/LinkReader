@@ -237,13 +237,24 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
         if parsed is None:
             need, why = True, info.get("note") or "无响应"
         elif block:
-            need, why = True, "%s 校验页" % block
+            # 直连就撞上 Access Denied / 机器人校验页：直接剔除，
+            # 不再进兜底。真窗口去试这类页基本也是同一张拦截页，
+            # 每条白等一轮窗口时间不值得（用户实测后拍板）。
+            need = False
+            say("    [剔除] %s 机器人校验拦截，未取到正文" % block)
         elif parsed["wall"]:
             need = False                                  # 订阅墙：绝不渲染
         elif info.get("status") in (403, 429):
             need, why = True, "HTTP %s" % info["status"]
         elif parsed["chars"] < min_chars and _looks_scripted(page_raw):
             need, why = True, "正文仅 %d 字符，页面里有脚本" % parsed["chars"]
+
+        if block:
+            rec["status"] = "机器人验证"
+            rec["reason"] = "「%s」机器人校验拦截，未取到正文；可在自己浏览器打开后另存 HTML 再导入" % block
+            rec["trace"] = trace
+            rec["block"] = block
+            return rec
 
         vis_used = False
         rr = None
