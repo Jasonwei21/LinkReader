@@ -93,6 +93,20 @@ def _pdf_sidecar(raw, blocks, url, cache_dir):
     return None, ""
 
 
+def _looks_scripted(raw):
+    """页面里有没有脚本（或挂载点）。
+
+    正文少不一定是栏目页——很可能是"先给个空壳，正文由 JS 后填"。
+    判断依据不该是 HTML 多少字节，而是它有没有可能还要执行点什么。
+    纯静态的短页（订阅墙、登录页）通常没有脚本，不会被误送去渲染。
+    """
+    low = (raw or "").lower()
+    if "<script" in low:
+        return True
+    return any(k in low for k in ('id="app"', "id='app'", 'id="root"', "id='root'",
+                                  "__next_data__", "__nuxt__", "window.__"))
+
+
 def _analyze(raw, url, cache_dir, pdf_fallback=True, status=None):
     """解析一段 HTML：标题、正文块、订阅墙判定。返回 dict。
 
@@ -161,12 +175,12 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
             need = False                                  # 订阅墙：绝不渲染
         elif info.get("status") in (403, 429):
             need, why = True, "HTTP %s" % info["status"]
-        elif parsed["chars"] < min_chars and len(page_raw) > 5000:
-            need, why = True, "正文仅 %d 字符" % parsed["chars"]
+        elif parsed["chars"] < min_chars and _looks_scripted(page_raw):
+            need, why = True, "正文仅 %d 字符，页面里有脚本" % parsed["chars"]
 
         if need and render_fallback and not url.lower().endswith(".pdf"):
             say("    [兜底] %s → 改用浏览器渲染" % why)
-            rr = RF.render(url, cache_dir, want_shot=ocr_fallback,
+            rr = RF.render(url, cache_dir, want_shot=False,
                            timeout=max(timeout, 45), log=say)
 
             if rr["raw"]:
@@ -180,11 +194,17 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
                     rec["via"] = "render"
                     rec["http"] = 200
 
-            # ---- 渲染出 HTML 仍拿不到正文，才上 OCR
-            if ocr_fallback and rr["shot"]:
-                best = parsed["chars"] if parsed else 0
-                if best < min_chars:
-                    orc = OW.ocr_image(rr["shot"])
+            # ---- 渲染出 HTML 仍拿不到正文，才截图 OCR
+            # 截图要 15 秒上下，DOM 里已经有正文时就不截，省掉这一趟。
+            # 页面压根没打开（rr 没有 raw）时也不截：那只会得到一张空白图。
+            best = parsed["chars"] if parsed else 0
+            if ocr_fallback and rr["raw"] and best < min_chars:
+                shot_path, shot_note = RF.shot(url, cache_dir,
+                                               timeout=max(timeout, 45), log=say)
+                if not shot_path:
+                    render_note = shot_note
+                else:
+                    orc = OW.ocr_image(shot_path)
                     ob = OW.blocks_from_ocr(orc, title=(parsed or {}).get("title", ""))
                     oc = sum(len(t) for _, t in ob)
                     if oc > best:
@@ -192,7 +212,7 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
                                           "kind": "", "ev": "", "pdf_note": ""}
                         parsed = dict(base, blocks=ob, chars=oc, wall=False)
                         rec["via"] = "ocr"
-                        rec["shot"] = rr["shot"]
+                        rec["shot"] = shot_path
                         rec["needs_review"] = True
                         page_lang = LF.guess_lang(" ".join(t for _, t in ob)[:3000])
                         render_note = OW.quality_note(orc, page_lang)
@@ -202,8 +222,6 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
                 render_note = render_note or rr.get("note", "")
 
     rec["render_note"] = render_note
-    if parsed["pdf_note"]:
-        rec["from_pdf"] = True
 
     if parsed is None:
         rec["status"] = "失败"
@@ -211,6 +229,9 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
         if render_note:
             rec["reason"] += "；渲染也没成功：%s" % render_note
         return rec
+
+    if parsed["pdf_note"]:
+        rec["from_pdf"] = True
 
     body = " ".join(t for _, t in parsed["blocks"])
     meta = parsed["meta"]

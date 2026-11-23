@@ -17,6 +17,7 @@
 """
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -81,6 +82,45 @@ def available():
     return bool(find_browser()[0])
 
 
+_NET_TEXT = {
+    "ERR_CONNECTION_CLOSED": "连接被中断",
+    "ERR_CONNECTION_RESET": "连接被重置",
+    "ERR_CONNECTION_REFUSED": "连接被拒绝",
+    "ERR_TIMED_OUT": "加载超时",
+    "ERR_CONNECTION_TIMED_OUT": "连接超时",
+    "ERR_ADDRESS_UNREACHABLE": "地址不可达",
+    "ERR_NETWORK_CHANGED": "网络切换中",
+    "ERR_HTTP2_PROTOCOL_ERROR": "HTTP/2 协议错误",
+    "ERR_NAME_NOT_RESOLVED": "域名解析失败",
+    "ERR_TUNNEL_CONNECTION_FAILED": "代理隧道握手失败",
+    "ERR_PROXY_CONNECTION_FAILED": "代理连不上",
+    "ERR_EMPTY_RESPONSE": "服务器返回空响应",
+    "ERR_CERT_AUTHORITY_INVALID": "证书不受信任",
+    "ERR_SSL_PROTOCOL_ERROR": "SSL 握手失败",
+    "ERR_INTERNET_DISCONNECTED": "本机没联网",
+}
+
+# 这些是瞬时故障，同一条链接再开一次浏览器往往就过了
+# 这些是"快速失败"，同一条链接再开一次浏览器往往就过了。
+# 刻意不含各种 TIMED_OUT：一次已经二十多秒，网络真不通时再等一次纯属浪费。
+_NET_TRANSIENT = ("ERR_CONNECTION_CLOSED", "ERR_CONNECTION_RESET",
+                  "ERR_EMPTY_RESPONSE",
+                  "ERR_TUNNEL_CONNECTION_FAILED", "ERR_PROXY_CONNECTION_FAILED")
+
+
+def _net_error(err_bytes):
+    """从 stderr 里挑出 Chromium 的网络错误码，返回 (code, 中文说明)。"""
+    try:
+        text = err_bytes.decode("utf-8", "ignore")
+    except Exception:
+        return "", ""
+    found = re.findall(r"net::(ERR_[A-Z0-9_]+)", text)
+    if not found:
+        return "", ""
+    code = found[-1]
+    return code, _NET_TEXT.get(code, code)
+
+
 def _kill_tree(proc):
     """先 taskkill /T 杀整棵树，再不济 proc.kill()。"""
     try:
@@ -140,23 +180,35 @@ def dump_dom(url, timeout=45, budget_ms=5000, width=1280, height=1200, work_dir=
     if not exe:
         return None, "本机没找到 Edge / Chrome，无法渲染"
 
-    profile = tempfile.mkdtemp(prefix="lr-render-", dir=work_dir)
-    try:
-        args = _base_args(exe, profile, width, height, budget_ms) + ["--dump-dom", url]
-        rc, out, err, timed = _run_browser(args, timeout)
-        if timed:
-            return None, "浏览器渲染超时（%d 秒）" % timeout
-        html = out.decode("utf-8", "ignore")
-        low = html.lower()
-        if "<html" not in low and "<body" not in low:
+    for attempt in (0, 1):
+        profile = tempfile.mkdtemp(prefix="lr-render-", dir=work_dir)
+        try:
+            args = _base_args(exe, profile, width, height, budget_ms) + ["--dump-dom", url]
+            rc, out, err, timed = _run_browser(args, timeout)
+            if timed:
+                # 超时不再重试：一次已经 45 秒，再等一次不划算，
+                # 真要救回来那是用户重跑的事。
+                return None, "浏览器渲染超时（%d 秒）" % timeout
+            html = out.decode("utf-8", "ignore")
+            low = html.lower()
+            if "<html" in low or "<body" in low:
+                if log:
+                    log("    [渲染] %s 取到 %d 字节" % (name, len(html)))
+                return html, ""
+
+            code, text = _net_error(err)
+            if code in _NET_TRANSIENT and attempt == 0:
+                if log:
+                    log("    [渲染] %s，重试一次" % text)
+                continue
+            if code:
+                return None, "页面没打开：%s（%s）" % (text, code)
             msg = err.decode("utf-8", "ignore").strip().splitlines()
             tail = msg[-1][:80] if msg else ("无输出，rc=%s" % rc)
             return None, "%s 渲染无结果（%s）" % (name, tail)
-        if log:
-            log("    [渲染] %s 取到 %d 字节" % (name, len(html)))
-        return html, ""
-    finally:
-        shutil.rmtree(profile, ignore_errors=True)
+        finally:
+            shutil.rmtree(profile, ignore_errors=True)
+    return None, "浏览器渲染失败"
 
 
 def screenshot(url, png_path, timeout=45, budget_ms=5000, width=1280, height=1200,
@@ -173,12 +225,31 @@ def screenshot(url, png_path, timeout=45, budget_ms=5000, width=1280, height=120
         if timed:
             return False, "截图超时（%d 秒）" % timeout
         if not os.path.isfile(png_path) or os.path.getsize(png_path) < 2000:
+            code, text = _net_error(err)
+            if code:
+                return False, "截图失败：%s（%s）" % (text, code)
             return False, "%s 截图失败（rc=%s）" % (name, rc)
         if log:
             log("    [截图] %d 字节" % os.path.getsize(png_path))
         return True, ""
     finally:
         shutil.rmtree(profile, ignore_errors=True)
+
+
+def shot(url, cache_dir, timeout=45, budget_ms=5000, width=1280, height=1200, log=None):
+    """按需截图（不走 render）。返回 (png 路径 | "", note)。
+
+    单独拆出来是因为截图要 15 秒上下：DOM 已经拿到正文时就没必要截。
+    """
+    work_dir = None
+    if cache_dir:
+        work_dir = os.path.join(cache_dir, "_render")
+        os.makedirs(work_dir, exist_ok=True)
+    tag = hashlib.md5(url.encode("utf-8")).hexdigest()[:10]
+    path = os.path.join(work_dir or tempfile.gettempdir(), "shot-%s.png" % tag)
+    ok, note = screenshot(url, path, timeout=timeout, budget_ms=budget_ms,
+                          width=width, height=height, work_dir=work_dir, log=log)
+    return (path if ok else ""), note
 
 
 def render(url, cache_dir, want_shot=False, timeout=45, budget_ms=5000,

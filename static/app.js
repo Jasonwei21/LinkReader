@@ -9,7 +9,7 @@
   const { createApp, ref, reactive, computed, onMounted, nextTick } = Vue;
 
   /* 版本号只在这里写一次，设置弹窗和指南页脚都引用它 */
-  const VER = '1.0.0';
+  const VER = '1.1.0-beta';
 
   /* ------------------------------------------------------------ 工具 */
   const URL_RE = /https?:\/\/[^\s<>"'`）)，,。；;、]+/gi;

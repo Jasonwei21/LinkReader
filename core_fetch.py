@@ -27,6 +27,9 @@ UAS = [
     ("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0"),
 ]
 
+# 忽略 HTTP_PROXY / HTTPS_PROXY 的 opener，用于"代理隧道被拒时改直连试试"
+_DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 MONTHS = {m: i for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
 
@@ -66,6 +69,19 @@ def _decode(body, charset=None):
     return body.decode("utf-8", "ignore")
 
 
+def _local_net_fail(reason):
+    """本机网络/代理层面的失败——重试同一个请求没有意义。"""
+    s = (reason or "").lower()
+    return any(k in s for k in (
+        "tunnel connection failed",   # 代理 CONNECT 被拒
+        "connection refused",         # 目标端口没人听
+        "actively refused",           # 同上，中文系统 WinError 10061
+        "no route to host",
+        "10061",
+        "10065",
+    ))
+
+
 def fetch(url, cache_dir="cache", timeout=40, retries=3, use_cache=True):
     """返回 (raw_html, info)。info: status / note / from_cache。"""
     info = {"status": None, "note": "", "from_cache": False, "final_url": url}
@@ -77,6 +93,7 @@ def fetch(url, cache_dir="cache", timeout=40, retries=3, use_cache=True):
         return open(fn, encoding="utf-8", errors="ignore").read(), dict(info, from_cache=True)
 
     last = ""
+    direct = False        # 代理隧道被拒时改直连再试一次（见下方 URLError 分支）
     for i in range(retries):
         try:
             req = urllib.request.Request(url, headers={
@@ -86,7 +103,10 @@ def fetch(url, cache_dir="cache", timeout=40, retries=3, use_cache=True):
                 "Accept-Encoding": "identity",
                 "Cache-Control": "no-cache",
             })
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            opener = _DIRECT.open if direct else urllib.request.urlopen
+            # 直连只是"顺手试一下"：目标被墙时 TCP 会一直等到超时，
+            # 上限压到 8 秒，别为了一个大概率不通的路子把整条链拖慢。
+            with opener(req, timeout=(min(timeout, 8) if direct else timeout)) as r:
                 body = r.read()
                 charset = None
                 try:
@@ -115,7 +135,21 @@ def fetch(url, cache_dir="cache", timeout=40, retries=3, use_cache=True):
             if e.code not in (408, 429) and 400 <= e.code < 500:
                 break
         except urllib.error.URLError as e:
-            last = "连接失败（%s）" % str(getattr(e, "reason", e))[:60]
+            reason = str(getattr(e, "reason", e))
+            last = "连接失败（%s）" % reason[:60]
+            low = reason.lower()
+            # 环境里配了代理、而这条链接走了代理隧道被拒：直连有时反而通。
+            # 两者是两套配置（urllib 读环境变量，浏览器读系统设置），
+            # 所以一条路不通不代表另一条也不通。
+            if not direct and ("tunnel" in low or "proxy" in low):
+                direct = True
+                last = "代理不通（%s），改直连" % reason[:40]
+                continue
+            # 端口不通这类是本机网络的事，同一个配置再试几次也一样
+            if _local_net_fail(reason):
+                info["note"] = last
+                info["local_net_fail"] = True
+                return None, info
         except Exception as e:
             last = "%s: %s" % (type(e).__name__, str(e)[:60])
         time.sleep(1.2 * (i + 1))

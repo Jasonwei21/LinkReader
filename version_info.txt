@@ -1,4 +1,4 @@
-# PyInstaller 版本资源：让 LinkReader.exe 的属性里也显示 1.0.0
+# PyInstaller 版本资源：让 LinkReader.exe 的属性里也显示版本号
 VSVersionInfo(
   ffi=FixedFileInfo(
     filevers=(1, 0, 0, 0),
@@ -14,11 +14,11 @@ VSVersionInfo(
     StringFileInfo([
       StringTable('080404B0', [
         StringStruct('FileDescription', 'LinkReader 链接抓取摘要器'),
-        StringStruct('FileVersion', '1.0.0.0'),
+        StringStruct('FileVersion', '1.1.0.0'),
         StringStruct('InternalName', 'LinkReader'),
         StringStruct('OriginalFilename', 'LinkReader.exe'),
         StringStruct('ProductName', 'LinkReader'),
-        StringStruct('ProductVersion', '1.0.0')
+        StringStruct('ProductVersion', '1.1.0-beta')
       ])
     ]),
     VarFileInfo([VarStruct('Translation', [2052, 1200])])
