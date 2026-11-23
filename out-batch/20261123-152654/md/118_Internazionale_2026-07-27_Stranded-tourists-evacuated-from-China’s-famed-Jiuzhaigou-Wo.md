@@ -1,0 +1,58 @@
+# Stranded tourists evacuated from China’s famed Jiuzhaigou World Heritage site after mudslides, heavy rain
+
+- 来源：Internazionale　|　发布：2026-07-27　|　作者：Redazione　|　正文字符：5674
+- 原文：https://www.internazionale.it/ultime-notizie-reuters/2026/07/27/stranded-tourists-evacuated-from-china-s-famed-jiuzhaigou-world-heritage-site-after-mudslides-heavy-rain
+
+## I turisti bloccati sono stati evacuati dal famoso sito cinese di Jiuzhaigou, patrimonio dell’umanità, a seguito di frane e forti piogge
+
+HONG KONG, July 27 (Reuters) - China evacuated stranded tourists from the UNESCO World Heritage site of Jiuzhaigou on Monday after mudslides triggered by heavy rain, state broadcaster CCTV reported, as authorities issued the highest flash-flood alert for parts of the country in the wake of Typhoon Noul.
+
+Jiuzhaigou, in southwestern Sichuan province, is famous for its fairyland landscape with blue, green and purple pools, snow capped peaks, lakes and multi-tiered waterfalls.
+
+CCTV said some of the key tourist sites had been closed and stranded tourists were being safely evacuating.
+
+The closures come as China issued its highest alert for flash-floods across multiple provinces after Typhoon Noul, the strongest typhoon to hit the country this year, brought widespread torrential rains across southern and central regions.
+
+“Due to mudslides, starting July 27, the area above Arrow Bamboo Lake (including Arrow Bamboo Lake) in Rize Valley and the entire Zechawa Valley in Jiuzhaigou Scenic Area will be temporarily closed to tourists,” local authorities said.
+
+China’s Ministry of Water Resources and the China Meteorological Administration jointly issued a red warning for flash floods from Sunday night through Monday, warning of high risks in parts of Jiangxi, Hunan, Guangdong, Sichuan, Shaanxi, Gansu and southeastern Xinjiang.
+
+Mudslides and soil erosion are common in China’s mountainous regions, particularly where steep river valleys intersect, especially during the peak summer rainy season. At least four deadly landslides have occurred across China this month.
+
+In the southwestern city of Chongqing, a massive landslide following torrential rain killed 11 people, with 50 others still missing.
+
+At least 21 people died after a landslide struck Tanchang, a mountainous county in the northwestern province of Gansu, while flash floods at a scenic camping spot in Gansu’s Weiyuan county killed 10 tourists and injured 23 others.
+
+In a separate disaster, five people were killed after a loess soil collapse buried a house in a village in northern Shanxi province.
+
+The severe weather coincides with China entering its peak flood control window — known as Qixia Bashang — from mid-July to mid-August.
+
+Weather experts warn extreme rainfall will increase in frequency and intensity over the coming weeks, with much of northern China set to experience 20% to 50% more precipitation than usual.
+
+(Reporting by Farah Master and the Beijing newsroom; Editing by Michael Perry)
+
+HONG KONG, 27 luglio (Reuters) - Lunedì la Cina ha evacuato i turisti rimasti bloccati nel sito di Jiuzhaigou, patrimonio mondiale dell’UNESCO, a seguito di frane provocate da forti piogge, secondo quanto riportato dall’emittente statale CCTV, mentre le autorità hanno diramato il massimo allarme per inondazioni improvvise in alcune zone del paese sulla scia del tifone Noul.
+
+Jiuzhaigou, nella provincia sud-occidentale del Sichuan, è famosa per il suo paesaggio da favola con laghetti blu, verdi e viola, cime innevate, laghi e cascate a più livelli.
+
+La CCTV ha riferito che alcuni dei principali siti turistici sono stati chiusi e che i turisti bloccati sono stati evacuati in sicurezza.
+
+Le chiusure sono state disposte dopo che la Cina ha emesso il massimo livello di allerta per inondazioni improvvise in diverse province, in seguito al passaggio del tifone Noul — il più forte che abbia colpito il paese quest’anno — che ha portato piogge torrenziali su vaste aree delle regioni meridionali e centrali.
+
+«A causa delle frane, a partire dal 27 luglio, l’area sopra il Lago Arrow Bamboo (compreso il Lago Arrow Bamboo) nella Valle di Rize e l’intera Valle di Zechawa nell’area panoramica di Jiuzhaigou saranno temporaneamente chiuse ai turisti», hanno dichiarato le autorità locali.
+
+Il Ministero delle Risorse Idriche cinese e l’Amministrazione Meteorologica Cinese hanno emesso congiuntamente un’allerta rossa per inondazioni improvvise da domenica notte a lunedì, segnalando rischi elevati in alcune zone di Jiangxi, Hunan, Guangdong, Sichuan, Shaanxi, Gansu e nel sud-est dello Xinjiang.
+
+Le frane e l’erosione del suolo sono fenomeni comuni nelle regioni montuose della Cina, in particolare dove si incrociano valli fluviali ripide, specialmente durante il picco della stagione delle piogge estiva. Questo mese in tutta la Cina si sono verificate almeno quattro frane mortali.
+
+Nella città di Chongqing, nel sud-ovest del Paese, una massiccia frana causata da piogge torrenziali ha provocato la morte di 11 persone, mentre altre 50 risultano ancora disperse.
+
+Almeno 21 persone sono morte in seguito a una frana che ha colpito Tanchang, una contea montuosa nella provincia nord-occidentale del Gansu, mentre le inondazioni improvvise in un’area panoramica di campeggio nella contea di Weiyuan, sempre nel Gansu, hanno causato la morte di 10 turisti e il ferimento di altri 23.
+
+In un altro disastro, cinque persone sono morte dopo che un crollo di terreno loessico ha seppellito un’abitazione in un villaggio nella provincia settentrionale dello Shanxi.
+
+Le condizioni meteorologiche avverse coincidono con l’inizio del periodo di massima attività di controllo delle inondazioni in Cina — noto come Qixia Bashang — che va da metà luglio a metà agosto.
+
+Gli esperti meteorologici avvertono che nelle prossime settimane le precipitazioni estreme aumenteranno in frequenza e intensità, con gran parte della Cina settentrionale destinata a registrare un aumento delle precipitazioni dal 20% al 50% rispetto al normale.
+
+(Reporter Farah Master e della redazione di Pechino; editor Michael Perry)

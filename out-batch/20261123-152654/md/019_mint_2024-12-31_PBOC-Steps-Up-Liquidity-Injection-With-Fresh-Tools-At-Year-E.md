@@ -1,0 +1,18 @@
+# PBOC Steps Up Liquidity Injection With Fresh Tools At Year-End
+
+- 来源：mint　|　发布：2024-12-31　|　作者：list.metadata.agency　|　正文字符：2153
+- 原文：https://www.livemint.com/economy/pboc-steps-up-liquidity-injection-with-fresh-tools-at-yearend-11735638125318.html
+
+## China’s central bank injected 1.7 trillion yuan ($233 billion) of cash in December, dialing up liquidity support for the economy and financial markets at year-end.
+
+The People’s Bank of China conducted 1.4 trillion yuan in outright reverse repurchase agreements using three- and six-month contracts, aiming to maintain sufficient liquidity in the banking system, it said in a statement Tuesday. This follows injections of 800 billion yuan and 500 billion yuan in the past two months through the new tool introduced in October.
+
+The central bank also bought a net 300 billion yuan of treasury bonds this month, according to a separate statement. This move will add an equivalent amount of cash into the financial markets. The PBOC has absorbed sovereign notes for five straight months on a net basis, after starting regular bond transactions with primary dealers in August.
+
+The increased injections underscore the PBOC’s accommodative stance after the country’s top leaders pledged more support with “moderately loose” monetary policy for the economy facing threat of escalating trade tensions. A more robust liquidity buffer will help banks manage the typical year-end rise in demand for cash, particularly ahead of upcoming regulatory checks.
+
+The PBOC’s use of newer policy tools is also part of a broader revamp aimed at enhancing liquidity management and guiding markets, bringing its approach closer to global peers. For instance, the one-year medium-lending facility, a traditional tool, has been phased out, with withdrawals totaling 1.15 trillion yuan this month. Instead, the central bank has prioritized the use of short-term interest rate as its main policy rate.
+
+Meanwhile, growing bets on further PBOC easing have pushed down government bond yields. Traders suggest the authority’s large-scale purchases of debt have contributed to the one-year sovereign yields falling below 1% earlier this month.
+
+Analysts say the PBOC will likely continue ramping up outright reverse repo and government bond purchases to ensure adequate cash flow in the banking system, as the economy faces increasing threat from US tariffs and persisting deflationary pressure.

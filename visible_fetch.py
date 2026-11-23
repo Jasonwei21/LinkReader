@@ -1,0 +1,326 @@
+# -*- coding: utf-8 -*-
+"""可见窗口兜底：用真实浏览器窗口打开页面，等它渲染完，再取已渲染的 DOM。
+
+为什么需要这一级
+    有的站点（Reuters 的 DataDome、AP 的 Cloudflare）会识别无头浏览器，
+    直接返回一个校验页。无头模式怎么调都拿不到正文，但**同一个地址用平时
+    那个浏览器打开是能看的**。这里就照这个思路做：开一个真窗口，等页面
+    自己出来，再把屏幕上那份 DOM 取走。
+
+边界
+    - 只取"已经渲染出来的东西"，不注入脚本去骗过校验、不碰验证码。
+    - 需要人点验证码的站点，这里到点就放弃，如实报"需要人工处理"。
+    - 窗口是可见的，用户能看到它在做什么。
+
+实现
+    Edge/Chrome 以 --remote-debugging-port 启动，用 CDP（DevTools 协议）
+    控制导航与取值。CDP 走 WebSocket，这里用标准库实现了一个够用的客户端，
+    不引入任何第三方依赖，exe 体积不变。
+
+    Runtime.evaluate 取 document.documentElement.outerHTML 拿到的就是
+    渲染后的整页 HTML，交给 core_fetch 的正文抽取即可。
+"""
+import base64
+import json
+import os
+import socket
+import struct
+import subprocess
+import threading
+import time
+import urllib.parse
+import urllib.request
+
+import render_fetch as RF
+
+CREATE_NO_WINDOW = 0x08000000
+
+_STATE = {
+    "proc": None,
+    "port": 0,
+    "profile": "",
+    "exe": "",
+    "name": "",
+    "lock": threading.Lock(),
+}
+
+# 可见抓取一次只做一条（并发会被机器人校验限流，实测 3 并只有 1 条过）
+_VIS_LOCK = threading.Semaphore(1)
+
+
+# ---------------------------------------------------------------- WebSocket
+class _WS(object):
+    """够用的 WebSocket 客户端：只处理 CDP 需要的文本收发。"""
+
+    def __init__(self, ws_url, timeout=30):
+        if not ws_url.startswith("ws://"):
+            raise IOError("不是 ws 地址：%s" % ws_url[:40])
+        rest = ws_url[5:]
+        hostport, _, path = rest.partition("/")
+        host, _, port = hostport.partition(":")
+        self.sock = socket.create_connection((host, int(port or 80)), timeout=timeout)
+        self.sock.settimeout(timeout)
+        key = base64.b64encode(os.urandom(16)).decode()
+        req = ("GET /%s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
+               "Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\n"
+               "Sec-WebSocket-Version: 13\r\n\r\n") % (path, hostport, key)
+        self.sock.sendall(req.encode())
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise IOError("握手时连接断开")
+            buf += chunk
+        if b"101" not in buf.split(b"\r\n")[0]:
+            raise IOError("握手被拒绝")
+
+    def close(self):
+        try:
+            self.sock.close()
+        except Exception:
+            pass
+
+    def send_text(self, text):
+        data = text.encode("utf-8")
+        n = len(data)
+        head = bytearray([0x81])
+        if n < 126:
+            head.append(0x80 | n)
+        elif n < 65536:
+            head.append(0x80 | 126)
+            head += struct.pack(">H", n)
+        else:
+            head.append(0x80 | 127)
+            head += struct.pack(">Q", n)
+        mask = os.urandom(4)
+        head += mask
+        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+        self.sock.sendall(bytes(head) + masked)
+
+    def _exact(self, n):
+        out = b""
+        while len(out) < n:
+            chunk = self.sock.recv(n - len(out))
+            if not chunk:
+                raise IOError("连接已断开")
+            out += chunk
+        return out
+
+    def recv_text(self):
+        while True:
+            b1, b2 = self._exact(2)
+            opcode = b1 & 0x0F
+            masked = b2 & 0x80
+            n = b2 & 0x7F
+            if n == 126:
+                n = struct.unpack(">H", self._exact(2))[0]
+            elif n == 127:
+                n = struct.unpack(">Q", self._exact(8))[0]
+            mk = self._exact(4) if masked else None
+            data = self._exact(n) if n else b""
+            if mk:
+                data = bytes(c ^ mk[i % 4] for i, c in enumerate(data))
+            if opcode == 8:
+                raise IOError("对端关闭连接")
+            if opcode == 9:                      # ping -> pong
+                self.sock.sendall(bytes([0x8A, 0x80]) + os.urandom(4))
+                continue
+            if opcode == 10:
+                continue
+            if opcode in (1, 2):
+                if not (b1 & 0x80):              # 分片：继续读到结束帧
+                    while True:
+                        h1, h2 = self._exact(2)
+                        fin = h1 & 0x80
+                        nn = h2 & 0x7F
+                        if nn == 126:
+                            nn = struct.unpack(">H", self._exact(2))[0]
+                        elif nn == 127:
+                            nn = struct.unpack(">Q", self._exact(8))[0]
+                        data += self._exact(nn) if nn else b""
+                        if fin:
+                            break
+                return data.decode("utf-8", "ignore")
+
+
+def _cdp(ws, mid, method, params=None, timeout=30):
+    ws.send_text(json.dumps({"id": mid, "method": method, "params": params or {}}))
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        msg = json.loads(ws.recv_text())
+        if msg.get("id") == mid:
+            return msg
+    raise IOError("CDP 超时：%s" % method)
+
+
+def _eval(ws, mid, expr, timeout=20):
+    r = _cdp(ws, mid, "Runtime.evaluate",
+             {"expression": expr, "returnByValue": True, "awaitPromise": True},
+             timeout=timeout)
+    return (r.get("result") or {}).get("result", {}).get("value")
+
+
+# ---------------------------------------------------------------- 浏览器进程
+def _free_port():
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+    finally:
+        s.close()
+
+
+def _http_json(path, port, timeout=5):
+    with urllib.request.urlopen("http://127.0.0.1:%d%s" % (port, path),
+                                timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8", "ignore"))
+
+
+def _ensure_browser(cache_dir, log=None):
+    """确保有一个可见浏览器在跑。整批复用同一个实例，不会每条弹一个窗口。"""
+    with _STATE["lock"]:
+        p = _STATE["proc"]
+        if p is not None and p.poll() is None:
+            return _STATE["port"]
+        exe, name = RF.find_browser()
+        if not exe:
+            raise IOError("本机没找到 Edge / Chrome")
+        prof = os.path.join(cache_dir, "_visible_profile")
+        os.makedirs(prof, exist_ok=True)
+        port = _free_port()
+        args = [exe,
+                "--remote-debugging-port=%d" % port,
+                "--user-data-dir=" + prof,
+                "--no-first-run", "--no-default-browser-check",
+                "--disable-background-networking", "--disable-sync",
+                "--mute-audio",
+                "--window-size=1100,820", "--window-position=140,90",
+                "about:blank"]
+        if log:
+            log("    [可见] 启动 %s（真实窗口）" % name)
+        proc = subprocess.Popen(args, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+        # 等调试端口起来
+        t0 = time.time()
+        while time.time() - t0 < 25:
+            try:
+                _http_json("/json/version", port)
+                _STATE.update({"proc": proc, "port": port, "profile": prof,
+                               "exe": exe, "name": name})
+                return port
+            except Exception:
+                if proc.poll() is not None:
+                    raise IOError("浏览器启动后立刻退出（rc=%s）" % proc.returncode)
+                time.sleep(0.4)
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        raise IOError("浏览器调试端口没起来")
+
+
+def close_browser():
+    """任务结束时收掉窗口，别在用户桌面上留一堆进程。"""
+    with _STATE["lock"]:
+        proc = _STATE.get("proc")
+        _STATE["proc"] = None
+        if proc is None:
+            return
+        try:
+            _http_json("/json/close/", _STATE.get("port") or 0, timeout=2)
+        except Exception:
+            pass
+        try:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           creationflags=CREATE_NO_WINDOW, timeout=10)
+        except Exception:
+            pass
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------- 取页面
+def _new_tab(port, url):
+    """开一个标签页，返回 (target_id, ws_url)。"""
+    q = urllib.parse.quote(url, safe="")
+    req = urllib.request.Request("http://127.0.0.1:%d/json/new?%s" % (port, q),
+                                 method="PUT")
+    with urllib.request.urlopen(req, timeout=10) as r:
+        t = json.loads(r.read().decode("utf-8", "ignore"))
+    return t.get("id"), t.get("webSocketDebuggerUrl")
+
+
+def _close_tab(port, tid):
+    try:
+        urllib.request.urlopen("http://127.0.0.1:%d/json/close/%s" % (port, tid),
+                               timeout=5).read()
+    except Exception:
+        pass
+
+
+def fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None):
+    """在可见窗口里打开 url，等页面真正出内容，返回 (html, note)。
+
+    串行执行：实测同一个窗口并发开 3 个标签，机器人校验只放行 1 条，
+    所以这里排队，其它抓取链路仍按并发跑。
+    """
+    with _VIS_LOCK:
+        return _fetch(url, cache_dir, min_text=min_text, max_wait=max_wait,
+                      settle=settle, log=log)
+
+
+def _fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None):
+    try:
+        port = _ensure_browser(cache_dir, log=log)
+    except Exception as e:
+        return None, "可见窗口起不来：%s" % e
+
+    tid = ws_url = None
+    ws = None
+    try:
+        tid, ws_url = _new_tab(port, url)
+        if not ws_url:
+            return None, "开标签页失败"
+        ws = _WS(ws_url, timeout=30)
+        _cdp(ws, 1, "Page.enable")
+        _cdp(ws, 2, "Runtime.enable")
+        _cdp(ws, 3, "Page.navigate", {"url": url}, timeout=30)
+
+        t0 = time.time()
+        best, best_len = None, 0
+        while time.time() - t0 < max_wait:
+            time.sleep(settle)
+            try:
+                state = _eval(ws, 10, "document.readyState")
+                n = _eval(ws, 11, "(document.body?document.body.innerText.length:0)") or 0
+                title = _eval(ws, 12, "document.title") or ""
+            except Exception:
+                continue
+            if n > best_len:
+                best_len = n
+                best = (state, n, title)
+            # 正文够长就认为页面真的出来了
+            if (state == "complete" and n >= min_text):
+                break
+        if log:
+            log("    [可见] %.0fs readyState=%s 文本 %d 字「%s」" % (
+                time.time() - t0, (best or ("?", 0, ""))[0], best_len,
+                ((best or ("", 0, ""))[2] or "")[:40]))
+
+        html = _eval(ws, 20, "document.documentElement.outerHTML", timeout=30)
+        if not html:
+            return None, "没取到页面内容（可能还在校验中）"
+        if best_len < min_text:
+            return html, "页面文本仅 %d 字，可能仍在机器人校验" % best_len
+        return html, ""
+    except Exception as e:
+        return None, "可见窗口取页面失败：%s" % str(e)[:80]
+    finally:
+        if ws is not None:
+            ws.close()
+        if tid:
+            _close_tab(port, tid)

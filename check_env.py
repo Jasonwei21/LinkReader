@@ -25,6 +25,7 @@ def files():
     need_files = ["app.py", "launch.py", "pipeline.py", "summarizer.py",
                   "translator.py", "llm.py", "core_fetch.py", "docx_out.py",
                   "sheet_links.py", "render_fetch.py", "ocr_win.py",
+                  "visible_fetch.py",
                   "static/index.html", "static/style.css", "static/app.js",
                   "static/guide.md", "static/favicon.ico", "static/icon-mark.svg",
                   "static/vendor/vue.global.prod.js",

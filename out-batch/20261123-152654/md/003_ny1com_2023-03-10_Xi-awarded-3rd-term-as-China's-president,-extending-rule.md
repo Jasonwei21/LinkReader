@@ -1,0 +1,44 @@
+# Xi awarded 3rd term as China's president, extending rule
+
+- 来源：ny1.com　|　发布：2023-03-10　|　作者：Associated Press　|　正文字符：6307
+- 原文：https://ny1.com/nyc/all-boroughs/ap-top-news/2023/03/10/chinas-xi-awarded-third-term-as-president-extending-rule
+
+BEIJING (AP) — Chinese leader Xi Jinping was awarded a third five-year term as the nation's president Friday, putting him on track to stay in power for life at a time of severe economic challenges and rising tensions with the U.S. and others.
+
+The endorsement of Xi's appointment by the ceremonial National People's Congress was a foregone conclusion for a leader who has sidelined potential rivals and filled the top ranks of the ruling Communist Party with his supporters since taking power in 2012.
+
+Xi, 69, had himself named to a third five-year term as party general secretary in October, breaking with a tradition under which Chinese leaders handed over power once a decade. A two-term limit on the figurehead presidency was deleted from the Chinese Constitution earlier, prompting suggestions he might stay in power for life.
+
+There was no indication that members of the National People's Congress had any option other than to endorse Xi and other officials picked by the Communist Party for other posts. When Xi was named to his first term as president in 2013, NPC members received a ballot with only his name on it and dropped it unchanged into a box. On Friday, reporters were kept at a distance and couldn’t see the four ballots that each delegate deposited into boxes placed around the vast auditorium of the Great Hall of the People.
+
+Xi was also unanimously named head of the Central Military Commission that commands the party's military wing, the 2 million-member People's Liberation Army, an appointment that has been automatic for the party leader for three decades.
+
+In other voting, the party's third-ranking official, Zhao Leji, was named head of the National People's Congress. The vast majority of the body's legislative work is headed by its Standing Committee, which meets year-round.
+
+Zhao, 67, a holdover from the previous party Politburo Standing Committee, the apex of political power in China headed by Xi, won Xi’s trust as head of the party’s anti-corruption watchdog, the Central Commission for Discipline Inspection, pursuing an anti-graft campaign that has frozen all potential opposition to Xi.
+
+Wang Huning, a holdover from the last Politburo Standing Committee, was later named head of the Chinese People’s Political Consultative Conference, the NPC’s advisory body that, in coordination with the party’s United Front Department, works to build Xi’s influence and image abroad. Wang has been a top adviser to three Chinese leaders and has authored books critiquing Western politics and society.
+
+Xi's new term and the appointment of loyalists to top posts underscores his near-total monopoly on Chinese political power, eliminating any potential opposition to his hyper-nationalistic agenda of building China into the top political, military and economic rival to the U.S. and the chief authoritarian challenge to the Washington-led democratic world order.
+
+Second-ranked Li Qiang is widely expected to take over as premier, nominally in charge of the Cabinet and caretaker of the economy. Li is best known for ruthlessly enforcing a brutal “zero-COVID” lockdown on Shanghai last spring as party boss of the Chinese financial hub, proving his loyalty to Xi in the face of complaints from residents over their lack of access to food, medical care and basic services.
+
+At the opening of the annual congress session on Sunday, outgoing Premier Li Keqiang announced plans for a consumer-led revival of the struggling economy, setting this year’s growth target at “around 5%.” Last year’s growth in the world’s second-largest economy fell to 3%, the second-weakest level since at least the 1970s.
+
+Separately, the Ministry of Finance announced a 7.2% budget increase in the defense budget to 1.55 trillion yuan ($224 billion), marking a slight increase over 2022. China’s military spending is the world’s second highest after the United States.
+
+In the days then, Xi and his new Foreign Minister Qin Gang have set a highly combative tone for relations with the U.S., amid tensions over trade, technology, Taiwan, human rights and Beijing's refusal to criticize Russia's invasion of Ukraine.
+
+“If the United States does not hit the brake, but continues to speed down the wrong path, no amount of guardrails can prevent derailing and there surely will be conflict and confrontation,” Qin said in his first news conference since taking up his post last year.
+
+That echoed comments at a small group meeting of delegates from Xi on Monday, in which he said that “Western countries led by the United States have implemented all-round containment, encirclement and suppression of China, which has brought unprecedented grave challenges to our nation’s development.”
+
+China must maximize its “national strategic capabilities” in a bid to “systematically upgrade the country’s overall strength to cope with strategic risks, safeguard strategic interests and realize strategic objectives,” Xi was quoted as saying to a meeting of delegates by the official Xinhua News Agency.
+
+Beijing maintains an “independent foreign policy of peace” and will “continue to view and develop China-U.S. relations in accordance with the principles of peaceful coexistence, mutual respect and win-win cooperation,” Mao said at a daily briefing.
+
+Russian President Vladimir Putin, with whom Xi has formed close ties, issued his congratulations, saying Xi's new term is an "acknowledgement of your achievements as the head of state, as well as wide support of your policy focused on China’s socioeconomic development and protection of its national interests on the global stage.”
+
+Under Xi, China and Russia announced a “no limits” relationship and China has pointedly refused to criticize Russia's invasion of Ukraine while echoing Moscow’s claim that the U.S. and NATO were to blame for provoking the Kremlin. Beijing has also blasted sanctions imposed on Russia after it invaded Ukraine, while Russia has staunchly supported China amid tensions with the U.S. over Taiwan.
+
+North Korean leader Kim Jong Un, head of the ruling Worker's Party, also sent congratulations, saying “the two parties and the two countries are defending and advancing socialism, the common cause, while supporting and closely cooperating with each other.” China is the impoverished and isolated North's most important political ally and source of food and fuel aid.

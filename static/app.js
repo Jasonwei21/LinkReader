@@ -52,9 +52,19 @@
     // 失败类只给分类词，细节交给跟在后面的 reason，避免两句话说同一件事
     if (s.indexOf('墙') >= 0) return { cls: 'skip', text: '订阅墙' };
     if (/拦截|403|429/.test(s)) return { cls: 'skip', text: '反爬拦截' };
+    if (/网络不通/.test(s)) return { cls: 'skip', text: '网络不通' };
+    if (/机器人验证/.test(s)) return { cls: 'skip', text: '机器人校验' };
     if (/过短|非文章|无法识别/.test(s)) return { cls: 'skip', text: '无正文' };
     if (/失败|超时|连不上/.test(s)) return { cls: 'skip', text: '未收录' };
     return { cls: 'bad', text: s || '异常' };
+  }
+
+  /* 当前正在试哪种办法（直连 / 渲染 / 截图 / OCR），带已用秒数。
+     降级链路一条条试过来要几十秒，不给个实时提示就像卡死了。 */
+  function stageOf(it) {
+    if (!it || !it.stage) return '';
+    const s = Math.round(it.stage_age || 0);
+    return it.stage + (s > 0 ? ' ' + s + 's' : '');
   }
 
   /* reason 常以状态词开头（"订阅墙：正文不可完整读取"），前面已经有标签了，
@@ -216,6 +226,7 @@ https://dialogue.earth/en/digest/...
                     <a-checkbox v-model="pdf">PDF 兜底</a-checkbox>
                     <a-checkbox v-model="renderFB" title="反爬拦截或超时时，用本机浏览器重新打开页面取正文">渲染兜底</a-checkbox>
                     <a-checkbox v-model="ocrFB" title="渲染后仍无正文时，截图后调系统 OCR（有损，需校对）">OCR 兜底</a-checkbox>
+                    <a-checkbox v-model="visibleFB" title="无头浏览器被机器人校验拦住时，开一个真实浏览器窗口打开，取它渲染好的页面">可见窗口</a-checkbox>
                     <a-checkbox v-model="doSum">摘要</a-checkbox>
                     <a-select v-model="trans" size="small" :popup-container="'body'">
                       <a-option value="off">不翻译</a-option>
@@ -281,6 +292,9 @@ https://dialogue.earth/en/digest/...
                   <span class="c-idx">{{ pad(it.idx) }}</span>
                   <span class="c-title" :class="{faint: !isOk(it)}">{{ it.title || shortUrl(it.url) }}</span>
                   <span class="pill" :class="pillOf(it).cls">{{ pillOf(it).text }}</span>
+                  <span class="stage" v-if="stageOf(it)">
+                    <i class="dot"></i>{{ stageOf(it) }}
+                  </span>
                 </div>
 
                 <div class="c-meta">
@@ -305,6 +319,13 @@ https://dialogue.earth/en/digest/...
                   </template>
                   <p class="why" v-else-if="detailOf(it)">{{ detailOf(it) }}</p>
                   <p class="why" v-else-if="pillOf(it).cls === 'busy'">正在处理，稍等这个条目跑完。</p>
+
+                  <div class="steps" v-if="it.trace && it.trace.length">
+                    <span class="step" v-for="(t, k) in it.trace" :key="k"
+                          :class="{bad: !t.ok}" :title="t.d || ''">
+                      {{ t.n }} {{ Math.round(t.s) }}s<em v-if="!t.ok">失败</em>
+                    </span>
+                  </div>
 
                   <div class="c-foot">
                     <a-button v-if="it.file" size="small" @click.stop="openFile(it, 'txt')">纯文本 .txt</a-button>
@@ -416,7 +437,7 @@ https://dialogue.earth/en/digest/...
         </div>
         <div class="r-item" v-for="it in progressItems" :key="it.idx">
           <i :class="it.cls">{{ it.mark }}</i>
-          <span class="t">{{ it.title }}</span>
+          <span class="t">{{ it.title }}<em v-if="it.sub"> · {{ it.sub }}</em></span>
         </div>
         <div class="rail-empty" v-if="!progressItems.length">
           还没有开始。跑一次之后，每条链接的处理结果会逐条列在这里。
@@ -554,6 +575,7 @@ https://dialogue.earth/en/digest/...
       const pdf = ref(true);
       const renderFB = ref(true);
       const ocrFB = ref(true);
+      const visibleFB = ref(false);
       const doSum = ref(true);
       const trans = ref('off');
 
@@ -662,6 +684,8 @@ https://dialogue.earth/en/digest/...
           on: !!renderFB.value },
         { t: ocrFB.value ? 'OCR 兜底：截图识别（有损，需校对）' : 'OCR 兜底：未开启',
           on: !!ocrFB.value },
+        { t: visibleFB.value ? '可见窗口：被机器人校验拦住时开真窗口打开' : '可见窗口：未开启',
+          on: !!visibleFB.value },
         { t: doSum.value ? '摘要：' + (llmReady.value ? '大模型生成' : '本地提取式') : '摘要：未开启',
           on: !!doSum.value },
         { t: trans.value === 'off' ? '翻译：不翻译'
@@ -680,6 +704,7 @@ https://dialogue.earth/en/digest/...
           return {
             idx: it.idx, mark: mark, cls: cls,
             title: trim(it.title || shortUrl(it.url), 42),
+            sub: (p.cls === 'busy' || p.cls === 'queued') ? stageOf(it) : '',
           };
         });
       });
@@ -1010,6 +1035,7 @@ https://dialogue.earth/en/digest/...
           if (typeof c.opt.pdf_fallback === 'boolean') pdf.value = c.opt.pdf_fallback;
           if (typeof c.opt.render_fallback === 'boolean') renderFB.value = c.opt.render_fallback;
           if (typeof c.opt.ocr_fallback === 'boolean') ocrFB.value = c.opt.ocr_fallback;
+          if (typeof c.opt.visible_fallback === 'boolean') visibleFB.value = c.opt.visible_fallback;
           if (typeof c.opt.summary === 'boolean') doSum.value = c.opt.summary;
           if (c.opt.translate) trans.value = c.opt.translate;
         } catch (e) { /* 首次运行没有 config.json，用默认值 */ }
@@ -1032,6 +1058,7 @@ https://dialogue.earth/en/digest/...
               pdf_fallback: pdf.value,
               render_fallback: renderFB.value,
               ocr_fallback: ocrFB.value,
+              visible_fallback: visibleFB.value,
               summary: doSum.value,
               translate: trans.value,
             },
@@ -1141,6 +1168,8 @@ https://dialogue.earth/en/digest/...
                 pdf_fallback: pdf.value,
                 render_fallback: renderFB.value,
                 ocr_fallback: ocrFB.value,
+                visible_fallback: visibleFB.value,
+              visible_fallback: visibleFB.value,
                 summary: doSum.value,
                 translate: trans.value,
                 workers: cfg.opt.workers,
@@ -1225,7 +1254,7 @@ https://dialogue.earth/en/digest/...
 
       return {
         icon: ICON, ver: VER, view, filter, q, cfgOpen, raw, strict, pdf, doSum, trans,
-        renderFB, ocrFB,
+        renderFB, ocrFB, visibleFB,
         guideOpen, guideHtml, guideToc, guideActive, guideBody,
         openGuide, onGuideScroll, jumpGuide,
         job, sel, history, urls, running, pct, stateText, stateCls, counts,
@@ -1235,7 +1264,7 @@ https://dialogue.earth/en/digest/...
         pickFile, onPick, onDropOver, onDrop,
         go, openCfg, select, newTask, start, downloadZip, openFile,
         saveCfg, testLLM, openHist, relTime, sameHost,
-        pillOf, detailOf, shortUrl, pad, isOk, trim60,
+        pillOf, detailOf, shortUrl, pad, isOk, trim60, stageOf,
       };
     },
   };

@@ -70,16 +70,60 @@ def _decode(body, charset=None):
 
 
 def _local_net_fail(reason):
-    """本机网络/代理层面的失败——重试同一个请求没有意义。"""
+    """本机网络/代理层面的失败——重试同一个请求没有意义。
+
+    这里认的是"根本连不上"，不是"服务器慢"：
+    - 10060 连接超时（对方没回应）：等满一轮 timeout 就够了，
+      再来两轮只是白等，用户看到的就是"每条都要 20 秒"。
+    - timed out / 10061 / 10065：同上，加一轮只是再等一遍。
+    这几类都由渲染兜底接手，比在这里反复重试有用。
+    """
     s = (reason or "").lower()
     return any(k in s for k in (
         "tunnel connection failed",   # 代理 CONNECT 被拒
         "connection refused",         # 目标端口没人听
         "actively refused",           # 同上，中文系统 WinError 10061
         "no route to host",
+        "timed out",                  # 连接/读取超时（socket timeout）
+        "timeout",
         "10061",
         "10065",
+        "10060",                      # 连接超时（对方无回应）
+        "正确答复",                     # 中文系统 WinError 10060 的措辞
+        "did not properly respond",   # 同上，英文措辞
+        "network is unreachable",
+        "10051",                      # 网络不可达
     ))
+
+
+# 商业反爬/机器人校验的指纹。识别出来就如实报告，不做任何对抗性绕过：
+# 伪造指纹、解验证码这类手段既不稳定，也越过了"只是读公开页面"的边界。
+_BLOCK_MARKS = (
+    ("DataDome", ("captcha-delivery.com", "datadome", "dd_cookie_test")),
+    ("Cloudflare", ("cf-challenge", "cf_chl_opt", "cdn-cgi/challenge-platform",
+                    "正在进行安全验证", "just a moment", "checking your browser",
+                    "enable javascript and cookies to continue")),
+    ("Akamai", ("access denied", "reference&#32;#", "akamai")),
+    ("PerimeterX", ("px-captcha", "perimeterx", "_pxcaptcha")),
+    ("Imperva", ("incapsula", "_incap_")),
+    ("机器人校验", ("are you a robot", "verify you are human", "unusual traffic")),
+)
+
+
+def detect_block(raw):
+    """判断这段 HTML 是不是反爬/机器人校验页。返回拦截方名字，没有则空串。
+
+    注意判据要看"页面本身几乎没有正文"，否则正常文章里出现 'Access Denied'
+    这种字样也会被误判。调用方通常已经知道正文字符数。
+    """
+    if not raw:
+        return ""
+    low = raw[:200000].lower()
+    for name, marks in _BLOCK_MARKS:
+        for m in marks:
+            if m in low:
+                return name
+    return ""
 
 
 def fetch(url, cache_dir="cache", timeout=40, retries=3, use_cache=True):
@@ -270,7 +314,9 @@ def junk_texts(raw):
         for d in n.walk():
             if d.tag in ("p", "h1", "h2", "h3", "h4", "h5", "li", "a", "dt", "dd", "span"):
                 t = p_text(d)
-                if t:
+                # 只收短串。有的站点（Reuters 这类）外层容器的 class 也会命中噪音规则，
+                # 一旦把整篇正文收进黑名单，正文就会被自己删光。
+                if t and len(t) <= 300:
                     out.add(t)
     return out
 
@@ -324,6 +370,25 @@ NAVWORD = re.compile(
 
 BLOCK_RE = re.compile(r"(?is)<(p|h1|h2|h3|h4|h5|li|blockquote|dt|dd|pre)\b([^>]*)>(.*?)</\1\s*>")
 
+# 有些站点（Reuters 等）正文段落是 <div data-testid="paragraph-3"> 而不是 <p>。
+# 只在"按常规标签抽出来的正文太少"时才用这条兜底，避免把布局 div 当正文。
+_LEAF_DIV = re.compile(r"(?is)<div\b[^>]*>((?:(?!<div\b).)*?)</div>")
+_NESTED_BLOCK = re.compile(
+    r"(?is)<(p|h[1-6]|ul|ol|li|blockquote|table|pre|article|section|figure)\b")
+
+
+def _leaf_div_blocks(seg):
+    """把"内部没有块级标签、但文本够长"的 div 当段落。返回 [(pos, tag, text)]。"""
+    out = []
+    for m in _LEAF_DIV.finditer(seg):
+        inner = m.group(1)
+        if _NESTED_BLOCK.search(inner):
+            continue
+        txt = strip_inline(inner)
+        if txt and len(txt) >= 60:
+            out.append((m.start(), "p", txt))
+    return out
+
 
 def strip_inline(s, keep_breaks=False):
     s = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", s)
@@ -372,11 +437,19 @@ def blocks_from_html(raw, title="", junk=None):
     seg = pick_region(raw)
 
     raw_blocks = []
+    found = []
     for m in BLOCK_RE.finditer(seg):
         tag = m.group(1).lower()
         txt = strip_inline(m.group(3), keep_breaks=(tag == "pre"))
         if txt:
-            raw_blocks.append([tag, txt])
+            found.append((m.start(), tag, txt))
+
+    # 常规标签抽出来的正文太少，说明这个站点是用 div 排段落的（React/Arc 系很常见）
+    if sum(len(t) for _, _, t in found) < 1200:
+        found += _leaf_div_blocks(seg)
+        found.sort(key=lambda x: x[0])
+
+    raw_blocks = [[tag, txt] for _, tag, txt in found]
 
     junk = junk or set()
     junk_norm = set(re.sub(r"\W+", "", x.lower())[:150] for x in junk)
@@ -386,7 +459,11 @@ def blocks_from_html(raw, title="", junk=None):
         if len(t) < 2:
             continue
         key = re.sub(r"\W+", "", t.lower())[:150]
-        if key in junk_norm or key in seen:
+        # 黑名单只用于剔除"相关阅读 / 订阅 / 分享"这类短 UI 串。
+        # 长段落即使和噪音集合撞了也保留：宁可多一段，不能整篇丢。
+        if key in junk_norm and len(t) < 200:
+            continue
+        if key in seen:
             continue
         if COOKIE.search(t):
             continue

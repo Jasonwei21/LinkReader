@@ -1,0 +1,34 @@
+# China is backing off coal power plant approvals after a 2022-23 surge that alarmed climate experts | The Associated Press
+
+- 来源：The Associated Press　|　发布：2024-08-20　|　作者：Alice Masquelier-Page　|　正文字符：3582
+- 原文：https://www.ap.org/news-highlights/spotlights/2024/china-is-backing-off-coal-power-plant-approvals-after-a-2022-23-surge-that-alarmed-climate-experts/
+
+BEIJING (AP) — Approvals for new coal-fired power plants in China dropped sharply in the first half of this year, according to an analysis released Tuesday, after a flurry of permits in the previous two years raised concern about the government’s commitment to limiting climate change.
+
+A review of project documents by Greenpeace East Asia found that 14 new coal plants were approved from January to June with a total capacity of 10.3 gigawatts, down 80% from 50.4 gigawatts in the first half of last year.
+
+Authorities approved 90.7 gigawatts in 2022 and 106.4 gigawatts in 2023, a surge that raised alarm among climate experts. China leads the world in solar and wind power installations but the government has said that coal plants are still needed for periods of peak demand because wind and solar power are less reliable. While China’s grid gives priority to greener sources of energy, experts worry that it won’t be easy for China to wean itself off coal once the new capacity is built.
+
+“We may now be seeing a turning point,” Gao Yuhe, the project lead for Greenpeace East Asia, said in a statement. “One question remains here. Are Chinese provinces slowing down coal approvals because they’ve already approved so many coal projects …? Or are these the last gasps of coal power in an energy transition that has seen coal become increasingly impractical? Only time can tell.”
+
+Greenpeace released the analysis with the Shanghai Institutes for International Studies, a government-affiliated think tank.
+
+Government weather experts have warned that the country should prepare for more extreme weather events because of climate change. The Ministry of Water Resources said at the end of July that major rivers had had 25 significant floods this year, the most since record-keeping started in 1998.
+
+In Hunan province, authorities said Monday that the death toll had risen to 50 people with 15 others still missing, as the search continued after landslides and flash flooding related to a tropical storm hit parts of southern China late last month.
+
+While seasonal flooding is common in southern China, the historically drier northeast and bordering areas in North Korea also are beginning to get heavier rain. Flooding cut power and communication to most of Jianchang county in the region’s Liaoning province on Tuesday and trapped more than 300 people, with evacuation taking place by helicopter, state media said.
+
+The government has issued a slew of documents in recent months on reducing carbon emissions and accelerating the shift to renewable energy.
+
+The National Energy Administration unveiled a three-year plan in June to retrofit existing coal power units and equip newly built ones with low-carbon technologies. Another government plan released this month to “accelerate the construction of a new power system” took aim at bottlenecks and other challenges, including how to expand transmission of renewable energy.
+
+Gao said that China should focus its resources on better connecting wind and solar power to the grid rather than building more coal power plants. Coal provides more than 60% of the country’s electricity.
+
+“Coal plays a foundation role in China’s energy security,” Li Fulong, an official of National Energy Administration, said at a news conference in June.
+
+China is also looking to nuclear power as it seeks to meet its carbon reduction targets. The State Council, China’s Cabinet, greenlighted five nuclear power projects on Monday with 11 units and a total cost of 200 billion yuan ($28 billion).
+
+___
+
+Associated Press video producer Olivia Zhang contributed to this report.

@@ -11,6 +11,7 @@ import core_fetch as LF
 import docx_out as DX
 import ocr_win as OW
 import render_fetch as RF
+import visible_fetch as VF
 import summarizer as SZ
 import translator as TR
 
@@ -140,8 +141,22 @@ def _analyze(raw, url, cache_dir, pdf_fallback=True, status=None):
     }
 
 
+def _trace_text(trace):
+    """把尝试路径写成一句话：直连 20s 失败（连接超时）→ 渲染 1s 失败（无输出）。"""
+    out = []
+    for x in trace:
+        s = "%s %.0fs" % (x["n"], x["s"])
+        if not x["ok"]:
+            s += " 失败"
+        if x.get("d"):
+            s += "（%s）" % x["d"]
+        out.append(s)
+    return " → ".join(out) if out else "没有可用的路径"
+
+
 def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
-              strict=True, log=None, render_fallback=True, ocr_fallback=True):
+              strict=True, log=None, render_fallback=True, ocr_fallback=True,
+              visible_fallback=False, stage=None):
     """抓一条。返回 rec（ok=True 表示可用）。
 
     三级降级：
@@ -149,28 +164,57 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
         2. 失败于技术性阻碍（超时 / 403 / 429 / JS 空壳）-> 本机浏览器渲染后取 DOM
         3. 渲染后仍抽不出正文（canvas 绘字、字体混淆）-> 截图 + 系统 OCR
     订阅墙/付费墙一律不进入降级：识别到就标记跳过，这是硬边界。
+
+    stage：每进入一个阶段回调一次（"直连抓取" / "浏览器渲染" / "截图" / "识别文字"），
+    界面靠它显示"现在正在试哪种办法"，而不是让人盯着一个不动的进度条。
     """
     rec = {
         "url": url, "ok": False, "status": "", "reason": "", "wall": False,
         "title": "", "author": "", "site": "", "date": "", "lang": "",
         "chars": 0, "n_blocks": 0, "blocks": [], "from_pdf": False, "http": None,
         "via": "http", "needs_review": False, "shot": "", "render_note": "",
+        "trace": [], "net_dead": False,
     }
     say = log or (lambda s: None)
+    tick = stage or (lambda name: None)
     page_raw = ""
     render_note = ""
+    trace = []
+    info = {}
 
+    def mark(name):
+        try:
+            tick(name)
+        except Exception:
+            pass
+
+    def note(name, t0, ok, detail=""):
+        trace.append({"n": name, "s": round(time.time() - t0, 1),
+                      "ok": bool(ok), "d": (detail or "").strip()[:60]})
+
+    mark("等待同站名额")
     sem = _slot(host_of(url))
+    # 有渲染兜底时，直连不必耗满 timeout：连不上就赶快交给浏览器。
+    # 用户设 20 秒时，原来光"确认连不上"就要 20 秒，再加上重试更久。
+    direct_timeout = min(timeout, 12) if render_fallback else timeout
+    block = ""
     with sem:
-        raw, info = LF.fetch(url, cache_dir, timeout=timeout)
+        mark("直连抓取")
+        t0 = time.time()
+        raw, info = LF.fetch(url, cache_dir, timeout=direct_timeout)
         rec["http"] = info.get("status")
         page_raw = raw or ""
         parsed = _analyze(page_raw, url, cache_dir, pdf_fallback, info.get("status")) if raw else None
+        note("直连", t0, bool(raw),
+             info.get("note") or ("HTTP %s" % info["status"] if info.get("status") else ""))
 
         # ---- 判断要不要降级：只认技术性阻碍
+        block = LF.detect_block(page_raw) if raw and (parsed is None or parsed["chars"] < min_chars) else ""
         need, why = False, ""
         if parsed is None:
             need, why = True, info.get("note") or "无响应"
+        elif block:
+            need, why = True, "%s 校验页" % block
         elif parsed["wall"]:
             need = False                                  # 订阅墙：绝不渲染
         elif info.get("status") in (403, 429):
@@ -180,12 +224,20 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
 
         if need and render_fallback and not url.lower().endswith(".pdf"):
             say("    [兜底] %s → 改用浏览器渲染" % why)
+            mark("浏览器渲染")
+            t0 = time.time()
             rr = RF.render(url, cache_dir, want_shot=False,
-                           timeout=max(timeout, 45), log=say)
+                           timeout=max(min(timeout, 25), 18), log=say)
+            note("渲染", t0, bool(rr["raw"]), rr.get("note", ""))
 
             if rr["raw"]:
                 p2 = _analyze(rr["raw"], url, cache_dir, pdf_fallback, 200)
-                if p2["wall"]:
+                b2 = LF.detect_block(rr["raw"]) if p2["chars"] < min_chars else ""
+                if b2:
+                    # 浏览器也撞上了机器人校验：到此为止，不 OCR、不重试。
+                    block = b2
+                    parsed = None
+                elif p2["wall"]:
                     parsed = p2                           # 渲染后才看清是墙，照样按墙处理
                     rec["via"] = "render"
                 elif parsed is None or p2["chars"] > parsed["chars"]:
@@ -197,16 +249,46 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
             # ---- 渲染出 HTML 仍拿不到正文，才截图 OCR
             # 截图要 15 秒上下，DOM 里已经有正文时就不截，省掉这一趟。
             # 页面压根没打开（rr 没有 raw）时也不截：那只会得到一张空白图。
+            # ---- 可见窗口：无头被机器人校验挡住时，用真窗口打开同一个地址。
+            # 只取"已经渲染出来的页面"，不做任何对抗性处理。
+            if visible_fallback and (block or parsed is None
+                                     or (parsed and parsed["chars"] < min_chars)):
+                mark("可见窗口")
+                t0 = time.time()
+                vh, vnote = VF.fetch(url, cache_dir, log=say)
+                note("可见窗口", t0, bool(vh), vnote)
+                if vh:
+                    p3 = _analyze(vh, url, cache_dir, pdf_fallback, 200)
+                    b3 = LF.detect_block(vh) if p3["chars"] < min_chars else ""
+                    if b3:
+                        block = b3
+                    elif p3["chars"] > (parsed["chars"] if parsed else 0):
+                        parsed = p3
+                        page_raw = vh
+                        rec["via"] = "visible"
+                        rec["http"] = 200
+                        block = ""
+
             best = parsed["chars"] if parsed else 0
-            if ocr_fallback and rr["raw"] and best < min_chars:
+            # 拦截页/空白页不做 OCR：那只会把"Access Denied"几个字认出来，
+            # 既浪费时间又给不出可用语料。
+            ocr_worth = bool(rr["raw"]) and not block and best >= 120
+            if ocr_fallback and ocr_worth and best < min_chars:
+                mark("截图")
+                t0 = time.time()
                 shot_path, shot_note = RF.shot(url, cache_dir,
-                                               timeout=max(timeout, 45), log=say)
+                                               timeout=max(min(timeout, 25), 18), log=say)
+                note("截图", t0, bool(shot_path), shot_note or "")
                 if not shot_path:
                     render_note = shot_note
                 else:
+                    mark("识别文字")
+                    t1 = time.time()
                     orc = OW.ocr_image(shot_path)
                     ob = OW.blocks_from_ocr(orc, title=(parsed or {}).get("title", ""))
                     oc = sum(len(t) for _, t in ob)
+                    note("OCR", t1, oc > best,
+                         orc.get("error") or "%d 字符" % oc)
                     if oc > best:
                         base = parsed or {"meta": {}, "title": "", "wall": False,
                                           "kind": "", "ev": "", "pdf_note": ""}
@@ -222,12 +304,20 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
                 render_note = render_note or rr.get("note", "")
 
     rec["render_note"] = render_note
+    rec["trace"] = trace
+    rec["block"] = block
+    # 本机网络层面就不通（连接超时 / 代理拒绝），且没有任何一级救回来。
+    # 上层据此对同一站点熔断，避免一屏链接每条都白等一轮超时。
+    rec["net_dead"] = bool(info.get("local_net_fail") and parsed is None)
+
+    if block and parsed is None:
+        rec["status"] = "机器人验证"
+        rec["reason"] = "「%s」机器人校验拦截，未取到正文；可在自己浏览器打开后另存 HTML 再导入" % block
+        return rec
 
     if parsed is None:
         rec["status"] = "失败"
-        rec["reason"] = "抓取失败：%s" % (info.get("note") or "无响应")
-        if render_note:
-            rec["reason"] += "；渲染也没成功：%s" % render_note
+        rec["reason"] = "抓取失败：" + _trace_text(trace)
         return rec
 
     if parsed["pdf_note"]:
@@ -250,6 +340,8 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
     if parsed["chars"] < min_chars:
         rec["status"] = "过短"
         rec["reason"] = "正文仅 %d 字符，可能是栏目页或加载失败" % parsed["chars"]
+        if len(trace) > 1:
+            rec["reason"] += "（%s）" % _trace_text(trace)
         if info.get("status") in (403, 429) and rec["via"] == "http":
             rec["status"] = "拦截"
             rec["reason"] = "反爬拦截 HTTP %s，浏览器渲染也没取到正文" % info["status"]
@@ -367,7 +459,8 @@ class Job(object):
                        "chars": 0, "summary": "", "reason": "", "file": "",
                        "translated": False, "site": "", "date": "",
                        "keywords": [], "summary_how": "", "docx_file": "",
-                       "via": "http", "needs_review": False}
+                       "via": "http", "needs_review": False,
+                       "stage": "", "stage_t": 0.0, "trace": []}
                       for i, u in enumerate(urls)]
         self.done = 0
         self.t0 = time.time()
@@ -378,12 +471,22 @@ class Job(object):
     # -- 内部
     def _set(self, idx, **kw):
         with self.lock:
+            if "stage" in kw:
+                kw["stage_t"] = time.time() if kw["stage"] else 0.0
             self.items[idx - 1].update(kw)
 
     def snapshot(self):
         with self.lock:
             # 跑完之后用时定住，别让它一直往上涨
             end = self.t_end or time.time()
+            now = time.time()
+            items = []
+            for x in self.items:
+                d = dict(x)
+                # 当前阶段已经等了多久：界面据此显示"正在渲染 8s"
+                d["stage_age"] = round(now - d["stage_t"], 1) if d.get("stage_t") else 0
+                d.pop("stage_t", None)
+                items.append(d)
             return {
                 "id": self.id,
                 "state": self.state,
@@ -391,7 +494,7 @@ class Job(object):
                 "done": self.done,
                 "total": len(self.urls),
                 "elapsed": round(end - self.t0, 1),
-                "items": [dict(x) for x in self.items],
+                "items": items,
                 "zip": os.path.basename(self.zpath) if self.zpath else "",
             }
 
@@ -403,6 +506,11 @@ class Job(object):
             self.msg = "任务异常：" + traceback.format_exc(limit=2).splitlines()[-1]
         finally:
             self.t_end = time.time()
+            # 可见窗口是整批复用的，跑完必须收掉，否则桌面上会留一个浏览器
+            try:
+                VF.close_browser()
+            except Exception:
+                pass
             if self.state == "running":
                 self.state = "done"
 
@@ -413,10 +521,23 @@ class Job(object):
         scraped_at = time.strftime("%Y-%m-%d %H:%M")
         workers = max(1, min(6, int(self.opt.get("workers") or 3)))
         results = {}
+        # 站点熔断：同一个站点连续 2 条「直连与渲染都颗粒无收」，
+        # 剩下的直接标记跳过，不再每条都耗 30 多秒确认一遍。
+        # 触发不只看连接层失败：代理对不可达地址回 403、渲染超时，
+        # 结果同样是零内容，这种情况最常见也最费时间。
+        # 用户的网络恢复后重跑即可（有缓存的成功条目不会重复抓）。
+        dead = {}
+        DEAD_LIMIT = 2
 
         def work(pair):
             i, url = pair
-            self._set(i, status="抓取中")
+            host = host_of(url)
+            if dead.get(host, 0) >= DEAD_LIMIT:
+                self._set(i, status="网络不通", stage="",
+                          reason="同站点已连续 %d 条两级全失败（直连与渲染都没取到内容），"
+                                 "自动跳过；网络恢复后重跑即可" % DEAD_LIMIT)
+                return
+            self._set(i, status="抓取中", stage="准备")
             rec = fetch_one(url, self.cache,
                             timeout=int(self.opt.get("timeout") or 40),
                             min_chars=int(self.opt.get("min_chars") or 400),
@@ -424,19 +545,27 @@ class Job(object):
                             strict=bool(self.opt.get("strict", True)),
                             render_fallback=bool(self.opt.get("render_fallback", True)),
                             ocr_fallback=bool(self.opt.get("ocr_fallback", True)),
-                            log=getattr(self, "log", None))
+                            visible_fallback=bool(self.opt.get("visible_fallback", False)),
+                            log=getattr(self, "log", None),
+                            stage=lambda name: self._set(i, stage=name))
             with self.lock:
                 results[i] = rec
+            common = dict(reason=rec["reason"], via=rec.get("via", "http"),
+                          needs_review=bool(rec.get("needs_review")),
+                          trace=rec.get("trace") or [], stage="")
             if not rec["ok"]:
-                self._set(i, status=rec["status"], reason=rec["reason"],
-                          title=rec.get("title") or "", chars=rec.get("chars", 0),
-                          via=rec.get("via", "http"),
-                          needs_review=bool(rec.get("needs_review")))
+                self._set(i, status=rec["status"], title=rec.get("title") or "",
+                          chars=rec.get("chars", 0), **common)
             else:
                 self._set(i, status="已抓取", title=rec["title"], chars=rec["chars"],
-                          reason=rec["reason"], via=rec.get("via", "http"),
-                          needs_review=bool(rec.get("needs_review")))
+                          **common)
             with self.lock:
+                # 完全取不到内容（status=失败：直连与渲染两级都没拿到正文）
+                # 才计入熔断；过短、订阅墙、机器人验证不算——那些说明路是通的。
+                if rec.get("status") == "失败":
+                    dead[host] = dead.get(host, 0) + 1
+                else:
+                    dead.pop(host, None)          # 这个站点又能通就复位
                 self.done += 1
             return rec
 

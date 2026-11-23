@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 
 CREATE_NO_WINDOW = 0x08000000
 
@@ -121,6 +122,26 @@ def _net_error(err_bytes):
     return code, _NET_TEXT.get(code, code)
 
 
+def _rm_tree(path):
+    """删掉一次渲染用的临时 profile。
+
+    Windows 上用 rd /s /q：Chromium profile 动辄上千个小文件，
+    交给系统删比 Python 逐个 rmtree 快得多，也不容易在半路卡住。
+    """
+    if not path or not os.path.isdir(path):
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(["cmd", "/c", "rd", "/s", "/q", path],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           creationflags=CREATE_NO_WINDOW, timeout=30)
+            if not os.path.isdir(path):
+                return
+        except Exception:
+            pass
+    shutil.rmtree(path, ignore_errors=True)
+
+
 def _kill_tree(proc):
     """先 taskkill /T 杀整棵树，再不济 proc.kill()。"""
     try:
@@ -184,9 +205,11 @@ def dump_dom(url, timeout=45, budget_ms=5000, width=1280, height=1200, work_dir=
         profile = tempfile.mkdtemp(prefix="lr-render-", dir=work_dir)
         try:
             args = _base_args(exe, profile, width, height, budget_ms) + ["--dump-dom", url]
+            t0 = time.time()
             rc, out, err, timed = _run_browser(args, timeout)
+            took = time.time() - t0
             if timed:
-                # 超时不再重试：一次已经 45 秒，再等一次不划算，
+                # 超时不再重试：一次已经等满 timeout，再等一次只是翻倍，
                 # 真要救回来那是用户重跑的事。
                 return None, "浏览器渲染超时（%d 秒）" % timeout
             html = out.decode("utf-8", "ignore")
@@ -197,17 +220,23 @@ def dump_dom(url, timeout=45, budget_ms=5000, width=1280, height=1200, work_dir=
                 return html, ""
 
             code, text = _net_error(err)
-            if code in _NET_TRANSIENT and attempt == 0:
+            # 只对"很快就断"的错误重试一次：几秒内断连往往是抖动，
+            # 等了几十秒才断说明这条路就是不通，再来一遍纯属浪费。
+            if code in _NET_TRANSIENT and attempt == 0 and took < 10:
                 if log:
                     log("    [渲染] %s，重试一次" % text)
                 continue
             if code:
                 return None, "页面没打开：%s（%s）" % (text, code)
             msg = err.decode("utf-8", "ignore").strip().splitlines()
-            tail = msg[-1][:80] if msg else ("无输出，rc=%s" % rc)
-            return None, "%s 渲染无结果（%s）" % (name, tail)
+            if not msg:
+                # rc=0 且 stdout / stderr 都空：浏览器正常退出但一个字节没吐。
+                # 常见于连接在握手阶段就断了（代理中途掐掉），Chromium 来不及
+                # 生成错误页。这不是页面内容的问题，也不是能重试解决的。
+                return None, "浏览器没打开页面（无输出，多为网络或代理中断）"
+            return None, "%s 渲染无结果（%s）" % (name, msg[-1][:80])
         finally:
-            shutil.rmtree(profile, ignore_errors=True)
+            _rm_tree(profile)
     return None, "浏览器渲染失败"
 
 
@@ -233,7 +262,7 @@ def screenshot(url, png_path, timeout=45, budget_ms=5000, width=1280, height=120
             log("    [截图] %d 字节" % os.path.getsize(png_path))
         return True, ""
     finally:
-        shutil.rmtree(profile, ignore_errors=True)
+        _rm_tree(profile)
 
 
 def shot(url, cache_dir, timeout=45, budget_ms=5000, width=1280, height=1200, log=None):

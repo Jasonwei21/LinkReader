@@ -62,6 +62,7 @@ DEFAULT_CFG = {
     "opt": {"workers": 3, "timeout": 40, "min_chars": 400,
             "pdf_fallback": True, "strict": True,
             "render_fallback": True, "ocr_fallback": True,
+            "visible_fallback": False,
             "summary": True, "translate": "off"},
 }
 JOBS = {}
@@ -373,7 +374,7 @@ class Handler(BaseHTTPRequestHandler):
                     except (TypeError, ValueError):
                         pass
             for k in ("pdf_fallback", "strict", "summary",
-                      "render_fallback", "ocr_fallback"):
+                      "render_fallback", "ocr_fallback", "visible_fallback"):
                 if k in opt:
                     cfg["opt"][k] = bool(opt[k])
             if opt.get("translate") in ("off", "zh", "both"):
@@ -412,7 +413,8 @@ class Handler(BaseHTTPRequestHandler):
             cfg = load_cfg()
             opt = dict(cfg["opt"])
             for k in ("workers", "timeout", "min_chars", "pdf_fallback", "strict",
-                      "render_fallback", "ocr_fallback", "summary"):
+                      "render_fallback", "ocr_fallback", "visible_fallback",
+                      "summary"):
                 if k in (data.get("opt") or {}):
                     opt[k] = data["opt"][k]
             jopt = data.get("opt") or {}

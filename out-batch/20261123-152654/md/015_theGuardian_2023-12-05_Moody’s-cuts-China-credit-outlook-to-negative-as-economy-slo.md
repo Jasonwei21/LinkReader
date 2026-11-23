@@ -1,0 +1,38 @@
+# Moody’s cuts China credit outlook to negative as economy slows
+
+- 来源：the Guardian　|　发布：2023-12-05　|　作者：Phillip Inman　|　正文字符：3182
+- 原文：https://www.theguardian.com/business/2023/dec/05/moodys-china-credit-outlook-negative-economy
+
+Rating agency says Beijing may need to bail out local governments as property sector collapses
+
+China’s ability to repay its government borrowing has been downgraded by the credit rating agency Moody’s, which said the ripple effects from a crisis in the property sector would undermine efforts to revive its flagging economy.
+
+Moody’s warned that Beijing would need to bail out local and regional governments and state-owned enterprises that were struggling with rising debts, hampering efforts to boost investment and growth.
+
+The rating agency downgraded its outlook for Chinese sovereign bonds from stable to negative on Tuesday, sending a signal to potential lenders that the risk of a default by Beijing has increased over the past year.
+
+China’s finance ministry said it was “disappointed” with Moody’s decision when the economy was on the mend. It said the agency’s concerns were “unnecessary” when the recovery “has been advancing steadily”.
+
+The world’s second-biggest economy had been slowing before a 2020 crackdown on excessive borrowing that followed a series of debt defaults by dozens of property developers.
+
+Without the revenues from rising real estate values and property transactions, local government finances have come under pressure. State enterprises that need loans to fund expansion have struggled to access credit from lenders affected by growing property defaults.
+
+On Monday, the property developer Evergrande was granted an extension until late January to try to restructure its debts and avoid liquidation.
+
+Once the largest developer in China, the company reportedly owes more than $300bn (£237bn), much of it to individuals whose properties were never built.
+
+Moody’s said the need for government intervention to support banks and local governments poses “broad downside risks to China’s fiscal, economic and institutional strength. The outlook change also reflects the increased risks related to structurally and persistently lower medium-term economic growth.”
+
+The changes in the property sector represent “a major structural shift in China’s growth drivers”, and could be a more significant drag to overall economic growth rate than expected, it said.
+
+Factors such as “weaker demographics”, as the population ages, will probably drive a decline in potential growth to about 3.5% by 2030, Moody’s said.
+
+China’s bounce back from the Covid-19 pandemic has faltered this year after an initial burst of activity – in part from bumper exports of coal to replace banned Russian gas – faded faster than expected.
+
+The credit rating agency said it expects China’s economy to grow at a 4% annual pace in 2024 and 2025, well below the 6% to 7% average in the 10 years before the pandemic.
+
+Moody’s move underscores deepening global concerns about the level of debt in the world’s second-largest economy.
+
+It maintained China’s credit rating at A1, which is its fifth-highest rating – the top “upper medium grade” – meaning China comfortably held on to its “investment grade” score. But lowering the outlook is a sign that the credit rating could be cut in future.
+
+Shares retreated in China on Tuesday, with Hong Kong’s Hang Seng index dropping 1.9% and the Shanghai Composite down 1.7%.
