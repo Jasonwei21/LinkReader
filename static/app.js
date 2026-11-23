@@ -224,9 +224,7 @@ https://dialogue.earth/en/digest/...
                   <div class="opts">
                     <a-checkbox v-model="strict">严格模式</a-checkbox>
                     <a-checkbox v-model="pdf">PDF 兜底</a-checkbox>
-                    <a-checkbox v-model="renderFB" title="反爬拦截或超时时，用本机浏览器重新打开页面取正文">渲染兜底</a-checkbox>
-                    <a-checkbox v-model="ocrFB" title="渲染后仍无正文时，截图后调系统 OCR（有损，需校对）">OCR 兜底</a-checkbox>
-                    <a-checkbox v-model="visibleFB" title="直连失败（10 秒内连不上 / 被拦截）时，优先开一个真实浏览器窗口打开原文取页面，一次一条。关闭则走无头渲染兜底">可见窗口</a-checkbox>
+                    <a-checkbox v-model="visibleFB" title="直连失败（10 秒内连不上 / 被拦截）时，开一个真实浏览器窗口打开原文取页面，一次一条；失败条目可点「再试一次」重开窗口">可见窗口</a-checkbox>
                     <a-checkbox v-model="doSum">摘要</a-checkbox>
                     <a-select v-model="trans" size="small" :popup-container="'body'">
                       <a-option value="off">不翻译</a-option>
@@ -331,6 +329,9 @@ https://dialogue.earth/en/digest/...
                     <a-button v-if="it.file" size="small" @click.stop="openFile(it, 'txt')">纯文本 .txt</a-button>
                     <a-button v-if="it.docx_file" size="small" @click.stop="openFile(it, 'docx')">Word .docx</a-button>
                     <a-button v-if="it.file" size="small" @click.stop="openFile(it, 'md')">Markdown .md</a-button>
+                    <a-button v-if="canRetry(it)" size="small" type="outline" status="warning"
+                              :disabled="retrying === it.idx"
+                              @click.stop="retryItem(it)">{{ retrying === it.idx ? '重试中…' : '再试一次' }}</a-button>
                     <a class="src" :href="it.url" target="_blank" rel="noreferrer"
                        @click.stop>打开原文 ↗</a>
                   </div>
@@ -573,9 +574,7 @@ https://dialogue.earth/en/digest/...
       const raw = ref('');
       const strict = ref(true);
       const pdf = ref(true);
-      const renderFB = ref(true);
-      const ocrFB = ref(true);
-      const visibleFB = ref(false);
+      const visibleFB = ref(true);
       const doSum = ref(true);
       const trans = ref('off');
 
@@ -680,11 +679,7 @@ https://dialogue.earth/en/digest/...
       const cfgChecks = computed(() => [
         { t: '严格模式：订阅墙与栏目页直接跳过', on: !!strict.value },
         { t: 'PDF 兜底：正文在附件里时去取 PDF', on: !!pdf.value },
-        { t: renderFB.value ? '渲染兜底：反爬/超时时用本机浏览器重取' : '渲染兜底：未开启',
-          on: !!renderFB.value },
-        { t: ocrFB.value ? 'OCR 兜底：截图识别（有损，需校对）' : 'OCR 兜底：未开启',
-          on: !!ocrFB.value },
-        { t: visibleFB.value ? '可见窗口：直连失败时优先开真窗口（一次一条）' : '可见窗口：未开启，走无头渲染兜底',
+        { t: visibleFB.value ? '可见窗口：直连失败时开真窗口，失败可点重试' : '可见窗口：未开启',
           on: !!visibleFB.value },
         { t: doSum.value ? '摘要：' + (llmReady.value ? '大模型生成' : '本地提取式') : '摘要：未开启',
           on: !!doSum.value },
@@ -1033,8 +1028,6 @@ https://dialogue.earth/en/digest/...
           keyInput.value = '';
           if (typeof c.opt.strict === 'boolean') strict.value = c.opt.strict;
           if (typeof c.opt.pdf_fallback === 'boolean') pdf.value = c.opt.pdf_fallback;
-          if (typeof c.opt.render_fallback === 'boolean') renderFB.value = c.opt.render_fallback;
-          if (typeof c.opt.ocr_fallback === 'boolean') ocrFB.value = c.opt.ocr_fallback;
           if (typeof c.opt.visible_fallback === 'boolean') visibleFB.value = c.opt.visible_fallback;
           if (typeof c.opt.summary === 'boolean') doSum.value = c.opt.summary;
           if (c.opt.translate) trans.value = c.opt.translate;
@@ -1056,8 +1049,6 @@ https://dialogue.earth/en/digest/...
               min_chars: cfg.opt.min_chars,
               strict: strict.value,
               pdf_fallback: pdf.value,
-              render_fallback: renderFB.value,
-              ocr_fallback: ocrFB.value,
               visible_fallback: visibleFB.value,
               summary: doSum.value,
               translate: trans.value,
@@ -1166,10 +1157,7 @@ https://dialogue.earth/en/digest/...
               opt: {
                 strict: strict.value,
                 pdf_fallback: pdf.value,
-                render_fallback: renderFB.value,
-                ocr_fallback: ocrFB.value,
                 visible_fallback: visibleFB.value,
-              visible_fallback: visibleFB.value,
                 summary: doSum.value,
                 translate: trans.value,
                 workers: cfg.opt.workers,
@@ -1226,6 +1214,52 @@ https://dialogue.earth/en/digest/...
         }
       }
 
+      /* 手动重试：真窗口重新打开原文再爬一次。窗口等待放宽到 120 秒，
+         留出人工点验证码的时间。一次只允许一条（窗口本来就串行）。 */
+      const retrying = ref(0);
+      let retryTimer = null;
+
+      function canRetry(it) {
+        if (it.file || it.status === '完成' || it.status === '已抓取') return false;
+        if ((it.status || '').indexOf('抓取中') === 0) return false;
+        const cls = pillOf(it).cls;
+        return cls === 'skip' || cls === 'bad';
+      }
+
+      async function retryItem(it) {
+        if (!job.value || retrying.value) return;
+        retrying.value = it.idx;
+        try {
+          await api('/api/retry', {
+            method: 'POST',
+            headers: JSON_HEAD,
+            body: JSON.stringify({ id: job.value.id, idx: it.idx }),
+          });
+        } catch (e) {
+          alert('重试失败：' + (e.message || e));
+          retrying.value = 0;
+          return;
+        }
+        clearInterval(retryTimer);
+        const t0 = Date.now();
+        retryTimer = setInterval(async () => {
+          try {
+            const s = await api('/api/job/' + job.value.id);
+            job.value = s;
+            const it2 = (s.items || []).find((x) => x.idx === it.idx);
+            if (it2 && (it2.status || '').indexOf('抓取中') !== 0
+                     && it2.status !== '排队中') {
+              clearInterval(retryTimer);
+              retrying.value = 0;
+            }
+          } catch (e) { /* 网络抖一下就等下一轮 */ }
+          if (Date.now() - t0 > 200000) {
+            clearInterval(retryTimer);
+            retrying.value = 0;
+          }
+        }, 2000);
+      }
+
       function openFile(it, kind) {
         if (!job.value) return;
         let rel = it.file;
@@ -1253,8 +1287,9 @@ https://dialogue.earth/en/digest/...
       });
 
       return {
-        icon: ICON, ver: VER, view, filter, q, cfgOpen, raw, strict, pdf, doSum, trans,
-        renderFB, ocrFB, visibleFB,
+        icon: ICON, ver: VER, view, filter, q, cfgOpen, raw, strict, pdf,
+        doSum, trans, visibleFB,
+        retrying, canRetry, retryItem,
         guideOpen, guideHtml, guideToc, guideActive, guideBody,
         openGuide, onGuideScroll, jumpGuide,
         job, sel, history, urls, running, pct, stateText, stateCls, counts,

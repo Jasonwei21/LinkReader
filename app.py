@@ -61,7 +61,6 @@ DEFAULT_CFG = {
             "api_key": "", "model": "gpt-4o-mini"},
     "opt": {"workers": 3, "timeout": 40, "min_chars": 400,
             "pdf_fallback": True, "strict": True,
-            "render_fallback": True, "ocr_fallback": True,
             "visible_fallback": True,
             "summary": True, "translate": "off"},
 }
@@ -374,7 +373,7 @@ class Handler(BaseHTTPRequestHandler):
                     except (TypeError, ValueError):
                         pass
             for k in ("pdf_fallback", "strict", "summary",
-                      "render_fallback", "ocr_fallback", "visible_fallback"):
+                      "visible_fallback"):
                 if k in opt:
                     cfg["opt"][k] = bool(opt[k])
             if opt.get("translate") in ("off", "zh", "both"):
@@ -413,8 +412,7 @@ class Handler(BaseHTTPRequestHandler):
             cfg = load_cfg()
             opt = dict(cfg["opt"])
             for k in ("workers", "timeout", "min_chars", "pdf_fallback", "strict",
-                      "render_fallback", "ocr_fallback", "visible_fallback",
-                      "summary"):
+                      "visible_fallback", "summary"):
                 if k in (data.get("opt") or {}):
                     opt[k] = data["opt"][k]
             jopt = data.get("opt") or {}
@@ -437,6 +435,28 @@ class Handler(BaseHTTPRequestHandler):
                     JOBS.pop(old, None)
             threading.Thread(target=job.run, daemon=True).start()
             return self._json({"id": job.id, "total": len(urls)})
+
+        if p == "/api/retry":
+            # 手动重试：真窗口重新打开原文再爬一次。只对最近的任务有效。
+            # 重试可能要 1–2 分钟（窗口等用户过验证码），放后台线程跑，
+            # HTTP 立刻返回，条目状态靠前端轮询刷新。
+            jid = str((data or {}).get("id") or "")
+            try:
+                idx = int((data or {}).get("idx") or 0)
+            except (TypeError, ValueError):
+                idx = 0
+            job = JOBS.get(jid)
+            if job is None:
+                return self._json({"error": "只在最近的任务里支持重试，历史任务请重新提交链接"}, 400)
+
+            def _do_retry(job=job, idx=idx):
+                try:
+                    job.retry_item(idx)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_do_retry, daemon=True).start()
+            return self._json({"ok": True, "idx": idx})
 
         return self._json({"error": "未找到"}, 404)
 

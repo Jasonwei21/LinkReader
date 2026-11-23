@@ -9,8 +9,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 import core_fetch as LF
 import docx_out as DX
-import ocr_win as OW
-import render_fetch as RF
 import visible_fetch as VF
 import summarizer as SZ
 import translator as TR
@@ -178,18 +176,23 @@ def _trace_text(trace):
 
 
 def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
-              strict=True, log=None, render_fallback=True, ocr_fallback=True,
-              visible_fallback=False, stage=None, visible_gate=None):
+              strict=True, log=None, render_fallback=False, ocr_fallback=False,
+              visible_fallback=True, stage=None, visible_gate=None, vis_wait=45,
+              visible_first=False):
     """抓一条。返回 rec（ok=True 表示可用）。
 
-    三级降级：
-        1. 直接 HTTP 抓取（最快，正文最准）
-        2. 失败于技术性阻碍（超时 / 403 / 429 / JS 空壳）-> 本机浏览器渲染后取 DOM
-        3. 渲染后仍抽不出正文（canvas 绘字、字体混淆）-> 截图 + 系统 OCR
-    订阅墙/付费墙一律不进入降级：识别到就标记跳过，这是硬边界。
+    两级降级（无头渲染与 OCR 兜底已按用户要求移除）：
+        1. 直接 HTTP 抓取，最多 10 秒
+        2. 直连失败 -> 真实浏览器窗口打开原文取页面（一次一条，串行）
+    订阅墙/付费墙与机器人校验页一律剔除：识别到就标记跳过，这是硬边界。
 
-    stage：每进入一个阶段回调一次（"直连抓取" / "浏览器渲染" / "截图" / "识别文字"），
+    stage：每进入一个阶段回调一次（"直连抓取" / "可见窗口"），
     界面靠它显示"现在正在试哪种办法"，而不是让人盯着一个不动的进度条。
+    vis_wait：真窗口里等页面出内容的上限；手动重试放宽到 120 秒，
+    留出人工过验证码的时间。render_fallback / ocr_fallback 参数保留
+    只是为了兼容旧调用，已不起作用。
+    visible_first：手动重试用——跳过直连和拦截页早退，直接开真窗口，
+    并无视站点熔断；用户点了「再试一次」就是要开窗口救这一条。
     """
     rec = {
         "url": url, "ok": False, "status": "", "reason": "", "wall": False,
@@ -219,55 +222,56 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
     sem = _slot(host_of(url))
     # 有兜底时直连只给 10 秒：连不上就交给浏览器，别在"确认连不上"
     # 上耗时间。两个兜底都没开时才用满 timeout。
-    direct_timeout = min(timeout, 10) if (render_fallback or visible_fallback) else timeout
+    direct_timeout = min(timeout, 10) if visible_fallback else timeout
     block = ""
+    parsed = None          # visible_first 跳过直连，这里必须先有初值
     with sem:
-        mark("直连抓取")
-        t0 = time.time()
-        raw, info = LF.fetch(url, cache_dir, timeout=direct_timeout)
-        rec["http"] = info.get("status")
-        page_raw = raw or ""
-        parsed = _analyze(page_raw, url, cache_dir, pdf_fallback, info.get("status")) if raw else None
-        note("直连", t0, bool(raw),
-             info.get("note") or ("HTTP %s" % info["status"] if info.get("status") else ""))
+        need = False
+        if not visible_first:
+            mark("直连抓取")
+            t0 = time.time()
+            raw, info = LF.fetch(url, cache_dir, timeout=direct_timeout)
+            rec["http"] = info.get("status")
+            page_raw = raw or ""
+            parsed = _analyze(page_raw, url, cache_dir, pdf_fallback, info.get("status")) if raw else None
+            note("直连", t0, bool(raw),
+                 info.get("note") or ("HTTP %s" % info["status"] if info.get("status") else ""))
 
-        # ---- 判断要不要降级：只认技术性阻碍
-        block = LF.detect_block(page_raw) if raw and (parsed is None or parsed["chars"] < min_chars) else ""
-        need, why = False, ""
-        if parsed is None:
-            need, why = True, info.get("note") or "无响应"
-        elif block:
-            # 直连就撞上 Access Denied / 机器人校验页：直接剔除，
-            # 不再进兜底。真窗口去试这类页基本也是同一张拦截页，
-            # 每条白等一轮窗口时间不值得（用户实测后拍板）。
-            need = False
-            say("    [剔除] %s 机器人校验拦截，未取到正文" % block)
-        elif parsed["wall"]:
-            need = False                                  # 订阅墙：绝不渲染
-        elif info.get("status") in (403, 429):
-            need, why = True, "HTTP %s" % info["status"]
-        elif parsed["chars"] < min_chars and _looks_scripted(page_raw):
-            need, why = True, "正文仅 %d 字符，页面里有脚本" % parsed["chars"]
+            # ---- 判断要不要降级：只认技术性阻碍
+            block = LF.detect_block(page_raw) if raw and (parsed is None or parsed["chars"] < min_chars) else ""
+            if parsed is None:
+                need, why = True, info.get("note") or "无响应"
+            elif block:
+                # 直连就撞上 Access Denied / 机器人校验页：直接剔除，
+                # 不再进兜底。真窗口去试这类页基本也是同一张拦截页，
+                # 每条白等一轮窗口时间不值得（用户实测后拍板）。
+                # 手动重试（visible_first）不走这条：它就是要开窗口救。
+                need = False
+                say("    [剔除] %s 机器人校验拦截，未取到正文" % block)
+            elif parsed["wall"]:
+                need = False                                  # 订阅墙：绝不渲染
+            elif info.get("status") in (403, 429):
+                need, why = True, "HTTP %s" % info["status"]
+            elif parsed["chars"] < min_chars and _looks_scripted(page_raw):
+                need, why = True, "正文仅 %d 字符，页面里有脚本" % parsed["chars"]
 
-        if block:
-            rec["status"] = "机器人验证"
-            rec["reason"] = "「%s」机器人校验拦截，未取到正文；可在自己浏览器打开后另存 HTML 再导入" % block
-            rec["trace"] = trace
-            rec["block"] = block
-            return rec
+            if block:
+                rec["status"] = "机器人验证"
+                rec["reason"] = "「%s」机器人校验拦截，未取到正文；可在自己浏览器打开后另存 HTML 再导入" % block
+                rec["trace"] = trace
+                rec["block"] = block
+                return rec
 
-        vis_used = False
-        rr = None
-        if need and not url.lower().endswith(".pdf"):
-            gate_open = (not visible_gate) or visible_gate.allow()
-            # ---- 一级兜底：真实窗口。开了可见窗口且没被熔断时，它优先于无头渲染：
-            # 同一个浏览器，真实模式比无头更不容易被识别，实测 2 秒就能拿一条。
-            # 窗口一次只开一条（visible_fetch 内部有全局锁），失败不重试、
-            # 任务继续下一条；连续 3 次失败后本批关闭窗口兜底（_VisGate）。
+        if (visible_first or need) and not url.lower().endswith(".pdf"):
+            gate_open = visible_first or (not visible_gate) or visible_gate.allow()
+            # ---- 唯一的兜底：真实窗口。一次只开一条（visible_fetch 内部有
+            # 全局锁），失败不重试、任务继续下一条；连续 3 次失败后本批
+            # 关闭窗口兜底（_VisGate）。手动重试（visible_first）不受熔断
+            # 限制：用户点了就是明确要开窗口，等他手动过验证。
             if visible_fallback and gate_open:
                 mark("可见窗口")
                 t0 = time.time()
-                vh, vnote = VF.fetch(url, cache_dir, log=say)
+                vh, vnote = VF.fetch(url, cache_dir, log=say, max_wait=vis_wait)
                 vis_ok = False
                 if vh:
                     p3 = _analyze(vh, url, cache_dir, pdf_fallback, 200)
@@ -288,73 +292,8 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
                     visible_gate.record(vis_ok)
                 if not vis_ok:
                     render_note = render_note or vnote
-                vis_used = True
-            elif visible_fallback and not gate_open:
+            elif visible_fallback and not gate_open and not visible_first:
                 say("    [可见] 窗口已连续失败，本批跳过窗口兜底")
-
-            # ---- 二级兜底：无头渲染。真实窗口刚试过就不再试无头——同一个
-            # 网络环境，真窗口都进不去的地方无头只会更进不去；
-            # 窗口没开（未启用或被熔断）时它才是主力。
-            if need and not vis_used and render_fallback:
-                say("    [兜底] %s → 改用浏览器渲染" % why)
-                mark("浏览器渲染")
-                t0 = time.time()
-                rr = RF.render(url, cache_dir, want_shot=False,
-                               timeout=max(min(timeout, 25), 18), log=say)
-                note("渲染", t0, bool(rr["raw"]), rr.get("note", ""))
-
-                if rr["raw"]:
-                    p2 = _analyze(rr["raw"], url, cache_dir, pdf_fallback, 200)
-                    b2 = LF.detect_block(rr["raw"]) if p2["chars"] < min_chars else ""
-                    if b2:
-                        # 浏览器也撞上了机器人校验：到此为止，不 OCR、不重试。
-                        block = b2
-                        parsed = None
-                    elif p2["wall"]:
-                        parsed = p2                       # 渲染后才看清是墙，照样按墙处理
-                        rec["via"] = "render"
-                    elif parsed is None or p2["chars"] > parsed["chars"]:
-                        parsed = p2
-                        page_raw = rr["raw"]
-                        rec["via"] = "render"
-                        rec["http"] = 200
-
-                # ---- 渲染出 HTML 仍拿不到正文，才截图 OCR
-                # 截图要 15 秒上下，DOM 里已经有正文时就不截，省掉这一趟。
-                # 页面压根没打开（rr 没有 raw）时也不截：那只会得到一张空白图。
-                best = parsed["chars"] if parsed else 0
-                # 拦截页/空白页不做 OCR：那只会把"Access Denied"几个字认出来，
-                # 既浪费时间又给不出可用语料。
-                ocr_worth = bool(rr["raw"]) and not block and best >= 120
-                if ocr_fallback and ocr_worth and best < min_chars:
-                    mark("截图")
-                    t0 = time.time()
-                    shot_path, shot_note = RF.shot(url, cache_dir,
-                                                   timeout=max(min(timeout, 25), 18), log=say)
-                    note("截图", t0, bool(shot_path), shot_note or "")
-                    if not shot_path:
-                        render_note = shot_note
-                    else:
-                        mark("识别文字")
-                        t1 = time.time()
-                        orc = OW.ocr_image(shot_path)
-                        ob = OW.blocks_from_ocr(orc, title=(parsed or {}).get("title", ""))
-                        oc = sum(len(t) for _, t in ob)
-                        note("OCR", t1, oc > best,
-                             orc.get("error") or "%d 字符" % oc)
-                        if oc > best:
-                            base = parsed or {"meta": {}, "title": "", "wall": False,
-                                              "kind": "", "ev": "", "pdf_note": ""}
-                            parsed = dict(base, blocks=ob, chars=oc, wall=False)
-                            rec["via"] = "ocr"
-                            rec["shot"] = shot_path
-                            rec["needs_review"] = True
-                            page_lang = LF.guess_lang(" ".join(t for _, t in ob)[:3000])
-                            render_note = OW.quality_note(orc, page_lang)
-                            say("    [兜底] 截图 OCR 取到 %d 字符（%s）" % (oc, orc.get("lang") or "?"))
-
-                if parsed is None or parsed["chars"] < min_chars:
-                    render_note = render_note or rr.get("note", "")
 
     rec["render_note"] = render_note
     rec["trace"] = trace
@@ -405,10 +344,8 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
 
     if parsed["wall"]:
         rec["reason"] = "订阅墙（%s），按宽松模式保留" % parsed["kind"]
-    elif rec["via"] == "ocr":
-        rec["reason"] = rec["render_note"] or "OCR 识别，需校对"
-    elif rec["via"] == "render":
-        rec["reason"] = "公开可读（浏览器渲染取得）"
+    elif rec["via"] == "visible":
+        rec["reason"] = "公开可读（真实窗口取得）"
     elif parsed["pdf_note"]:
         rec["reason"] = parsed["pdf_note"]
     else:
@@ -567,11 +504,84 @@ class Job(object):
             if self.state == "running":
                 self.state = "done"
 
+    def retry_item(self, idx):
+        """手动重试：真窗口重新打开原文再爬一次（用户点了「再试一次」）。
+
+        与自动流程的差别：
+        - 不走站点熔断（gate=None），用户点就是明确想再试；
+        - 窗口等待放宽到 120 秒，留出人工点验证码的时间；
+        - 成功就当场补写 txt / md / Word 并更新条目，不用重跑整批。
+        一次只允许一条重试（窗口本来就串行）。
+        """
+        i = idx - 1
+        if not (0 <= i < len(self.urls)):
+            return False, "没有第 %d 条" % idx
+        with self.lock:
+            if getattr(self, "_retrying", False):
+                return False, "上一次重试还没结束"
+            self._retrying = True
+        try:
+            url = self.urls[i]
+            say = getattr(self, "log", None)
+            self._set(i, status="抓取中", stage="准备")
+            rec = fetch_one(url, self.cache,
+                            timeout=int(self.opt.get("timeout") or 40),
+                            min_chars=int(self.opt.get("min_chars") or 400),
+                            pdf_fallback=bool(self.opt.get("pdf_fallback", True)),
+                            strict=bool(self.opt.get("strict", True)),
+                            visible_fallback=True,
+                            log=say,
+                            stage=lambda name: self._set(i, stage=name),
+                            visible_gate=None, vis_wait=120,
+                            visible_first=True)
+            common = dict(reason=rec["reason"], via=rec.get("via", "http"),
+                          needs_review=bool(rec.get("needs_review")),
+                          trace=rec.get("trace") or [], stage="")
+            if not rec["ok"]:
+                self._set(i, status=rec["status"], title=rec.get("title") or "",
+                          chars=rec.get("chars", 0), **common)
+                return False, rec["reason"]
+
+            rec.update({"summary": "", "keywords": [], "summary_how": "",
+                        "translate": "off"})
+            scraped_at = getattr(self, "scraped_at", None) or time.strftime("%Y-%m-%d %H:%M")
+            name = base_name(rec, i + 1)
+            p_txt = os.path.join(self.dir, "txt", name + ".txt")
+            p_md = os.path.join(self.dir, "md", name + ".md")
+            p_docx = os.path.join(self.dir, "docx", name + ".docx")
+            with open(p_txt, "w", encoding="utf-8") as f:
+                f.write(render_txt(rec))
+            with open(p_md, "w", encoding="utf-8") as f:
+                f.write(DX.render_md(rec))
+            has_docx = False
+            try:
+                note = rec.get("reason") if rec.get("reason") != "公开可读" else ""
+                DX.render_docx(rec, p_docx, index=i + 1, total=len(self.urls),
+                               scraped_at=scraped_at, note=note)
+                has_docx = True
+            except Exception:
+                pass
+            self._set(i, status="完成", title=rec["title"], chars=rec["chars"],
+                      file=os.path.relpath(p_txt, self.dir).replace("\\", "/"),
+                      docx=os.path.basename(p_docx) if has_docx else "",
+                      docx_file=("docx/%s.docx" % name) if has_docx else "",
+                      site=rec.get("site") or "", date=rec.get("date") or "",
+                      **common)
+            if say:
+                say("    [重试] 第 %d 条成功：%d 字符" % (idx, rec["chars"]))
+            return True, rec["reason"]
+        except Exception as e:
+            return False, "重试异常：%s" % str(e)[:120]
+        finally:
+            with self.lock:
+                self._retrying = False
+
     def _run(self):
         os.makedirs(os.path.join(self.dir, "txt"), exist_ok=True)
         os.makedirs(os.path.join(self.dir, "md"), exist_ok=True)
         os.makedirs(os.path.join(self.dir, "docx"), exist_ok=True)
         scraped_at = time.strftime("%Y-%m-%d %H:%M")
+        self.scraped_at = scraped_at
         workers = max(1, min(6, int(self.opt.get("workers") or 3)))
         results = {}
         # 站点熔断：同一个站点连续 2 条「直连与渲染都颗粒无收」，
@@ -597,8 +607,6 @@ class Job(object):
                             min_chars=int(self.opt.get("min_chars") or 400),
                             pdf_fallback=bool(self.opt.get("pdf_fallback", True)),
                             strict=bool(self.opt.get("strict", True)),
-                            render_fallback=bool(self.opt.get("render_fallback", True)),
-                            ocr_fallback=bool(self.opt.get("ocr_fallback", True)),
                             visible_fallback=bool(self.opt.get("visible_fallback", False)),
                             log=getattr(self, "log", None),
                             stage=lambda name: self._set(i, stage=name),

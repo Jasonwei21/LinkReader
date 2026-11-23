@@ -61,7 +61,6 @@ def main():
     opt = {
         "workers": workers, "timeout": timeout, "min_chars": 400,
         "strict": True, "pdf_fallback": True,
-        "render_fallback": True, "ocr_fallback": True,
         "visible_fallback": True,
         "summary": False, "translate": "off",
     }
