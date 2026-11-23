@@ -25,3 +25,6 @@ dist/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# 误生成的运行残留
+3/
