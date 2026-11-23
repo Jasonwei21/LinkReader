@@ -108,6 +108,29 @@ def _looks_scripted(raw):
                                   "__next_data__", "__nuxt__", "window.__"))
 
 
+class _VisGate(object):
+    """可见窗口熔断：窗口连续 3 次没取到内容，本批剩余条目不再开窗口。
+
+    窗口是串行的（一次一条），一条卡 45 秒、几十条都卡校验时，
+    后面的条目每条都要排队等一轮 45 秒，整批会被拖死。
+    记失败要"真失败"：窗口压根没起来、没取到内容、或取回来的还是拦截页。
+    取到正文就算成功，计数复位。
+    """
+
+    def __init__(self, limit=3):
+        self.lock = threading.Lock()
+        self.bad = 0
+        self.limit = limit
+
+    def allow(self):
+        with self.lock:
+            return self.bad < self.limit
+
+    def record(self, ok):
+        with self.lock:
+            self.bad = 0 if ok else self.bad + 1
+
+
 def _analyze(raw, url, cache_dir, pdf_fallback=True, status=None):
     """解析一段 HTML：标题、正文块、订阅墙判定。返回 dict。
 
@@ -156,7 +179,7 @@ def _trace_text(trace):
 
 def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
               strict=True, log=None, render_fallback=True, ocr_fallback=True,
-              visible_fallback=False, stage=None):
+              visible_fallback=False, stage=None, visible_gate=None):
     """抓一条。返回 rec（ok=True 表示可用）。
 
     三级降级：
@@ -251,23 +274,34 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
             # 页面压根没打开（rr 没有 raw）时也不截：那只会得到一张空白图。
             # ---- 可见窗口：无头被机器人校验挡住时，用真窗口打开同一个地址。
             # 只取"已经渲染出来的页面"，不做任何对抗性处理。
+            # 窗口一次只开一条（visible_fetch 内部有全局锁），失败不重试、
+            # 任务继续下一条；连续 3 次失败后本批关闭窗口兜底（_VisGate）。
+            vis_ok = False
             if visible_fallback and (block or parsed is None
                                      or (parsed and parsed["chars"] < min_chars)):
-                mark("可见窗口")
-                t0 = time.time()
-                vh, vnote = VF.fetch(url, cache_dir, log=say)
-                note("可见窗口", t0, bool(vh), vnote)
-                if vh:
-                    p3 = _analyze(vh, url, cache_dir, pdf_fallback, 200)
-                    b3 = LF.detect_block(vh) if p3["chars"] < min_chars else ""
-                    if b3:
-                        block = b3
-                    elif p3["chars"] > (parsed["chars"] if parsed else 0):
-                        parsed = p3
-                        page_raw = vh
-                        rec["via"] = "visible"
-                        rec["http"] = 200
-                        block = ""
+                if visible_gate and not visible_gate.allow():
+                    say("    [可见] 窗口已连续失败，本批跳过窗口兜底")
+                else:
+                    mark("可见窗口")
+                    t0 = time.time()
+                    vh, vnote = VF.fetch(url, cache_dir, log=say)
+                    if vh:
+                        p3 = _analyze(vh, url, cache_dir, pdf_fallback, 200)
+                        b3 = LF.detect_block(vh) if p3["chars"] < min_chars else ""
+                        if b3:
+                            block = b3          # 取回来的还是拦截页：算窗口失败
+                        elif p3["chars"] > (parsed["chars"] if parsed else 0):
+                            parsed = p3
+                            page_raw = vh
+                            rec["via"] = "visible"
+                            rec["http"] = 200
+                            block = ""
+                            vis_ok = True
+                        else:
+                            vis_ok = True       # 内容没更好，但窗口本身是通的
+                    note("可见窗口", t0, vis_ok, vnote)
+                    if visible_gate:
+                        visible_gate.record(vis_ok)
 
             best = parsed["chars"] if parsed else 0
             # 拦截页/空白页不做 OCR：那只会把"Access Denied"几个字认出来，
@@ -528,6 +562,7 @@ class Job(object):
         # 用户的网络恢复后重跑即可（有缓存的成功条目不会重复抓）。
         dead = {}
         DEAD_LIMIT = 2
+        self.vis_gate = _VisGate()          # 可见窗口熔断：连续 3 次失败关窗口
 
         def work(pair):
             i, url = pair
@@ -547,7 +582,8 @@ class Job(object):
                             ocr_fallback=bool(self.opt.get("ocr_fallback", True)),
                             visible_fallback=bool(self.opt.get("visible_fallback", False)),
                             log=getattr(self, "log", None),
-                            stage=lambda name: self._set(i, stage=name))
+                            stage=lambda name: self._set(i, stage=name),
+                            visible_gate=self.vis_gate)
             with self.lock:
                 results[i] = rec
             common = dict(reason=rec["reason"], via=rec.get("via", "http"),
