@@ -61,6 +61,52 @@ _STATE = {
 _VIS_LOCK = threading.Semaphore(1)
 
 
+class _NamedMutex(object):
+    """Windows 命名互斥量：把「开窗口抓取」在多个 LinkReader 实例之间也串起来。
+
+    _VIS_LOCK 只在进程内有效。两个实例同时跑时，各自都会开窗口，桌面上
+    就是"同时跳好几下"；更糟的是两边共用同一个浏览器 profile，Edge 的
+    单实例机制会让一个窗口被另一个实例接管，本实例就误判成"窗口关闭"。
+    这个互斥量保证所有实例加起来同一时刻只有一个抓取窗口。
+    """
+
+    def __init__(self, name):
+        self.name = name
+        self.handle = None
+
+    def acquire(self, timeout_ms):
+        if os.name != "nt":
+            return True
+        try:
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            h = k32.CreateMutexW(None, False, self.name)
+            if not h:
+                return True                     # 拿不到锁就退回进程内串行
+            r = k32.WaitForSingleObject(h, int(timeout_ms))
+            if r in (0x00000000, 0x00000080):   # WAIT_OBJECT_0 / WAIT_ABANDONED
+                self.handle = h
+                return True
+            k32.CloseHandle(h)
+            return False
+        except Exception:
+            return True
+
+    def release(self):
+        if not self.handle:
+            return
+        try:
+            import ctypes
+            ctypes.windll.kernel32.ReleaseMutex(self.handle)
+            ctypes.windll.kernel32.CloseHandle(self.handle)
+        except Exception:
+            pass
+        self.handle = None
+
+
+_GLOBAL_VIS = _NamedMutex("Local\\LinkReader_VisibleFetch_v1")
+
+
 # ---------------------------------------------------------------- WebSocket
 class _WS(object):
     """够用的 WebSocket 客户端：只处理 CDP 需要的文本收发。"""
@@ -221,7 +267,9 @@ def _launch_browser(cache_dir, log=None):
         exe, name = RF.find_browser()
         if not exe:
             raise IOError("本机没找到 Edge / Chrome")
-        prof = os.path.join(cache_dir, "_visible_profile")
+        # 每个进程用独立 profile：万一还是同时跑起两个实例，Edge 也不会
+        # 因为它们共用一个 user-data-dir 而互相接管窗口。
+        prof = os.path.join(cache_dir, "_visible_profile_%d" % os.getpid())
         os.makedirs(prof, exist_ok=True)
         for fn in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
             try:
@@ -350,9 +398,16 @@ def fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None):
     而且并发会让用户看不清每条在抓什么。这里排队，每条独占一个窗口，
     抓到完整正文（或判定失败）后由 finally 关掉，下一条再新开。
     """
-    with _VIS_LOCK:
-        return _fetch(url, cache_dir, min_text=min_text, max_wait=max_wait,
-                      settle=settle, log=log)
+    # 先跨进程排队（最多等 3 分钟），再进进程内串行。这样即便不小心开了
+    # 两个 LinkReader，桌面上也永远只有一个抓取窗口，不会同时跳好几个。
+    if not _GLOBAL_VIS.acquire(180000):
+        return None, "另一个 LinkReader 实例正在抓取，本条先跳过（等它空闲后再点「再试一次」）"
+    try:
+        with _VIS_LOCK:
+            return _fetch(url, cache_dir, min_text=min_text, max_wait=max_wait,
+                          settle=settle, log=log)
+    finally:
+        _GLOBAL_VIS.release()
 
 
 def _fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None):

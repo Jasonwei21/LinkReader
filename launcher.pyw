@@ -45,6 +45,28 @@ def state_dir():
 LOG_PATH = os.path.join(state_dir(), "launcher.log")
 PORT_PATH = os.path.join(state_dir(), "port.txt")
 
+# 单实例锁：Windows 命名互斥量在进程存活期间一直持有。
+# 早先只靠 port.txt 判断，两个实例几乎同时双击时会双双读空、双双启动，
+# 于是两个服务各开各的可见窗口、还共用同一个浏览器 profile 互相抢窗口。
+_MUTEX = {"handle": None}
+
+
+def acquire_single_instance():
+    """原子地争抢单实例锁：True=本实例拿到，False=已有实例在跑。"""
+    try:
+        k32 = ctypes.windll.kernel32
+        h = k32.CreateMutexW(None, False, "Local\\LinkReader_SingleInstance_v1")
+        if not h:
+            return True                      # 系统不给锁就退回旧逻辑
+        r = k32.WaitForSingleObject(h, 0)
+        if r in (0x00000000, 0x00000080):    # WAIT_OBJECT_0 / WAIT_ABANDONED
+            _MUTEX["handle"] = h             # 持有到进程退出，由系统自动释放
+            return True
+        k32.CloseHandle(h)
+        return False
+    except Exception:
+        return True
+
 
 def log(msg):
     try:
@@ -131,6 +153,19 @@ def main():
     if old:
         log("已有实例在 %d，直接开浏览器" % old)
         open_browser("http://127.0.0.1:%d/" % old)
+        return 0
+
+    # 互斥量真正保证「只起一个服务」：同时双击也只有一个能往下走。
+    if not acquire_single_instance():
+        # 另一个实例正在启动，等它把 port.txt 写出来再指过去（最多 10 秒）
+        for _ in range(50):
+            old = read_port()
+            if old:
+                log("已有实例在 %d（互斥量判重），直接开浏览器" % old)
+                open_browser("http://127.0.0.1:%d/" % old)
+                return 0
+            time.sleep(0.2)
+        log("检测到已有实例，但一时读不到端口，本次不再起服务")
         return 0
 
     os.makedirs(APP.OUT_ROOT, exist_ok=True)

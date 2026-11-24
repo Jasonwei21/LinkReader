@@ -276,11 +276,12 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
                 t0 = time.time()
                 vh, vnote = VF.fetch(url, cache_dir, log=say, max_wait=vis_wait)
                 vis_ok = False
-                # 窗口关闭识别：优先看统一标记，再看进程是否真没了。
-                # 早先只匹配一句精确文案，浏览器崩溃/异常退出走别的分支时
-                # 就漏判成通用"失败"，界面没有明确提示。
-                gone, by_app = VF.browser_dead()
-                vis_closed = (VF.CLOSED_MARK in (vnote or "")) or (gone and not by_app)
+                # 窗口关闭只认 fetch 返回的 CLOSED_MARK。
+                # 不再在 fetch 返回后去查全局进程状态：每条抓完窗口就关了，
+                # 那时 _STATE 里可能已经是下一条的新进程（或多实例的进程），
+                # 再查一次只会误判——用户看到的"窗口明明能打开，却显示窗口关闭"
+                # 就是这么来的。fetch 自己在等待循环里已判断过窗口是否消失。
+                vis_closed = VF.CLOSED_MARK in (vnote or "")
                 if vh:
                     p3 = _analyze(vh, url, cache_dir, pdf_fallback, 200)
                     b3 = LF.detect_block(vh) if p3["chars"] < min_chars else ""
