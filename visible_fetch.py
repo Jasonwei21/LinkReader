@@ -254,8 +254,18 @@ def _launch_browser(cache_dir, log=None):
     上一条是强杀收尾的，profile 里可能残留 Singleton 锁；不清理的话
     新实例会以为已有实例在跑，直接退出（rc=0，调试端口起不来）。
     """
+    # 兜底：上一条要是还残留着窗口（异常路径没关干净），会占着同一个
+    # profile 把新窗口"接管"过去。先按端口把它优雅关掉，再开新的。
+    old_port = _STATE.get("port") or 0
+    if old_port:
+        try:
+            _http_json("/json/version", old_port, timeout=1)
+            _browser_close(old_port)
+            time.sleep(0.5)
+        except Exception:
+            pass
+
     with _STATE["lock"]:
-        # 兜底：万一上一条还残留（异常路径没关干净），先收掉再开。
         stale = _STATE.get("proc")
         if stale is not None and stale.poll() is None:
             try:
@@ -309,31 +319,76 @@ def _launch_browser(cache_dir, log=None):
 
 
 def browser_dead():
-    """可见浏览器进程是否已经不在了。
+    """可见浏览器窗口是否真的不在了。
 
     返回 (gone, by_app)：gone=窗口没了；by_app=是程序主动关的（停止/任务结束）。
-    用户中途把窗口关掉（by_app=False），等价于说"这条别抓了"：
-    调用方据此立即停止等待、把该条记为「窗口关闭」，允许「再试一次」救回。
-    程序主动关窗（by_app=True）是正常收尾，不该误报成"用户关的"。
+
+    判据是**调试端口还连不连得上**，不是 proc.poll()。Edge 启动时那个
+    Popen 进程经常只是"启动器"：把窗口交给真正的浏览器进程后自己就退了
+    （rc=0）。只看 proc.poll() 会把"窗口明明开着"误判成"窗口已关闭"——
+    用户看到的就是"窗口打开了却说窗口关闭"。端口还在 = 窗口还在。
+
+    用户真把窗口关掉时端口会一起消失，这里照样能识别出来。
     """
     with _STATE["lock"]:
+        port = _STATE.get("port") or 0
+        by_app = bool(_STATE.get("app_closing"))
         p = _STATE.get("proc")
-        gone = p is None or p.poll() is not None
-        return gone, bool(_STATE.get("app_closing"))
+    if port:
+        try:
+            _http_json("/json/version", port, timeout=1.5)
+            return False, by_app          # 端口还能连，窗口就还在
+        except Exception:
+            pass
+    # 端口不通：只有进程也确实没了才算关闭；进程还在就再给它一次机会
+    if p is None or p.poll() is not None:
+        return True, by_app
+    return False, by_app
+
+
+def _browser_close(port):
+    """让浏览器自己优雅退出（CDP Browser.close）。
+
+    比 taskkill 可靠：Popen 拿到的常常是启动器进程，强杀它并不会关掉真正
+    的浏览器窗口，窗口就残留到下一轮、还会占着 profile。Browser.close 是
+    发给 browser 级 target 的，能把整个实例正常关掉。
+    """
+    try:
+        ver = _http_json("/json/version", port, timeout=2)
+        ws_url = ver.get("webSocketDebuggerUrl") or ""
+        if not ws_url:
+            return False
+        ws = _WS(ws_url, timeout=3)
+        try:
+            ws.send_text(json.dumps({"id": 1, "method": "Browser.close"}))
+        finally:
+            ws.close()
+        return True
+    except Exception:
+        return False
 
 
 def close_browser():
-    """任务结束时收掉窗口，别在用户桌面上留一堆进程。"""
+    """收掉本条窗口：先优雅关闭，等端口消失，再强杀兜底。"""
     with _STATE["lock"]:
         proc = _STATE.get("proc")
+        port = _STATE.get("port") or 0
         _STATE["proc"] = None
         _STATE["app_closing"] = True   # 标记：这次消失是程序主动关的
-        if proc is None:
-            return
-        try:
-            _http_json("/json/close/", _STATE.get("port") or 0, timeout=2)
-        except Exception:
-            pass
+
+    # 1) 优雅关闭：Browser.close 会让浏览器自己退出，profile 也正常落盘
+    closed = _browser_close(port) if port else False
+    if closed:
+        t0 = time.time()
+        while time.time() - t0 < 4:
+            try:
+                _http_json("/json/version", port, timeout=0.5)
+            except Exception:
+                break                  # 端口没了 = 浏览器确实退了
+            time.sleep(0.2)
+
+    # 2) 兜底强杀 Popen 那个进程（启动器/主进程都覆盖）
+    if proc is not None:
         try:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -391,12 +446,16 @@ def _close_tab(port, tid):
         pass
 
 
-def fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None):
+def fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None,
+          progress=None):
     """在一个全新的可见窗口里打开 url，抓完就关，返回 (html, note)。
 
     一条一个窗口、串行执行：实测并发开 3 个标签机器人校验只放行 1 条，
     而且并发会让用户看不清每条在抓什么。这里排队，每条独占一个窗口，
     抓到完整正文（或判定失败）后由 finally 关掉，下一条再新开。
+
+    progress(字数, readyState)：等待期间每轮回调一次，界面靠它显示
+    "可见窗口 8s·正文 1200 字"，让人看得出它确实在动，不是卡死。
     """
     # 先跨进程排队（最多等 3 分钟），再进进程内串行。这样即便不小心开了
     # 两个 LinkReader，桌面上也永远只有一个抓取窗口，不会同时跳好几个。
@@ -405,12 +464,13 @@ def fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None):
     try:
         with _VIS_LOCK:
             return _fetch(url, cache_dir, min_text=min_text, max_wait=max_wait,
-                          settle=settle, log=log)
+                          settle=settle, log=log, progress=progress)
     finally:
         _GLOBAL_VIS.release()
 
 
-def _fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None):
+def _fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None,
+           progress=None):
     try:
         port = _launch_browser(cache_dir, log=log)
     except Exception as e:
@@ -486,6 +546,13 @@ def _fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None):
                         or "access denied" in pl or "forbidden" in pl
                         or "机器人验证" in probe):
                     return None, "窗口里是拦截/错误页（%s）" % (title or "ERR")[:60]
+            # 实时把「已经读到多少字」报上去：窗口在等页面渲染时，
+            # 界面能显示"正文 1200 字"，用户看得出它在动。
+            if progress:
+                try:
+                    progress(int(n or 0), state or "")
+                except Exception:
+                    pass
             if n > best_len:
                 best_len = n
                 best = (state, n, title)

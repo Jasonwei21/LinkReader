@@ -62,7 +62,9 @@
   function stageOf(it) {
     if (!it || !it.stage) return '';
     const s = Math.round(it.stage_age || 0);
-    return it.stage + (s > 0 ? ' ' + s + 's' : '');
+    // 「可见窗口」等待时带上已经读到的字数，能看出它在动，不是卡住
+    const extra = it.stage_extra ? ' · ' + it.stage_extra : '';
+    return it.stage + extra + (s > 0 ? ' ' + s + 's' : '');
   }
 
   /* reason 常以状态词开头（"订阅墙：正文不可完整读取"），前面已经有标签了，

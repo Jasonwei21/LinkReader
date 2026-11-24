@@ -178,7 +178,8 @@ def _trace_text(trace):
 def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
               strict=True, log=None, render_fallback=False, ocr_fallback=False,
               visible_fallback=True, stage=None, visible_gate=None, vis_wait=45,
-              visible_first=False, direct=True, direct_timeout=10):
+              visible_first=False, direct=True, direct_timeout=10,
+              visible_progress=None):
     """抓一条。返回 rec（ok=True 表示可用）。
 
     两级降级（无头渲染与 OCR 兜底已按用户要求移除）：
@@ -274,7 +275,8 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
             if visible_fallback and gate_open:
                 mark("可见窗口")
                 t0 = time.time()
-                vh, vnote = VF.fetch(url, cache_dir, log=say, max_wait=vis_wait)
+                vh, vnote = VF.fetch(url, cache_dir, log=say, max_wait=vis_wait,
+                                     progress=visible_progress)
                 vis_ok = False
                 # 窗口关闭只认 fetch 返回的 CLOSED_MARK。
                 # 不再在 fetch 返回后去查全局进程状态：每条抓完窗口就关了，
@@ -541,6 +543,8 @@ class Job(object):
         with self.lock:
             if "stage" in kw:
                 kw["stage_t"] = time.time() if kw["stage"] else 0.0
+                if not kw["stage"]:
+                    kw.setdefault("stage_extra", "")   # 阶段结束后别留旧字数
             self.items[idx - 1].update(kw)
 
     def snapshot(self):
@@ -619,11 +623,13 @@ class Job(object):
                             visible_fallback=True,
                             log=say,
                             stage=lambda name: self._set(i, stage=name),
+                            visible_progress=lambda n, st: self._set(
+                                i, stage_extra=("正文 %d 字" % n) if n else "等页面加载"),
                             visible_gate=None, vis_wait=120,
                             visible_first=True)
             common = dict(reason=rec["reason"], via=rec.get("via", "http"),
                           needs_review=bool(rec.get("needs_review")),
-                          trace=rec.get("trace") or [], stage="")
+                          trace=rec.get("trace") or [], stage="", stage_extra="")
             if not rec["ok"]:
                 self._set(i, status=rec["status"], title=rec.get("title") or "",
                           chars=rec.get("chars", 0), **common)
@@ -702,6 +708,8 @@ class Job(object):
                             visible_fallback=bool(self.opt.get("visible_fallback", False)),
                             log=getattr(self, "log", None),
                             stage=lambda name: self._set(i, stage=name),
+                            visible_progress=lambda n, st: self._set(
+                                i, stage_extra=("正文 %d 字" % n) if n else "等页面加载"),
                             visible_gate=self.vis_gate,
                             direct=bool(self.opt.get("direct", True)),
                             direct_timeout=int(self.opt.get("direct_timeout") or 10))
@@ -709,7 +717,7 @@ class Job(object):
                 results[i] = rec
             common = dict(reason=rec["reason"], via=rec.get("via", "http"),
                           needs_review=bool(rec.get("needs_review")),
-                          trace=rec.get("trace") or [], stage="")
+                          trace=rec.get("trace") or [], stage="", stage_extra="")
             if not rec["ok"]:
                 self._set(i, status=rec["status"], title=rec.get("title") or "",
                           chars=rec.get("chars", 0), **common)
