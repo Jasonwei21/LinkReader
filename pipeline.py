@@ -280,7 +280,11 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
                 t0 = time.time()
                 vh, vnote = VF.fetch(url, cache_dir, log=say, max_wait=vis_wait)
                 vis_ok = False
-                vis_closed = "手动关闭了浏览器窗口" in (vnote or "")
+                # 窗口关闭识别：优先看统一标记，再看进程是否真没了。
+                # 早先只匹配一句精确文案，浏览器崩溃/异常退出走别的分支时
+                # 就漏判成通用"失败"，界面没有明确提示。
+                gone, by_app = VF.browser_dead()
+                vis_closed = (VF.CLOSED_MARK in (vnote or "")) or (gone and not by_app)
                 if vh:
                     p3 = _analyze(vh, url, cache_dir, pdf_fallback, 200)
                     b3 = LF.detect_block(vh) if p3["chars"] < min_chars else ""
@@ -301,13 +305,14 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
                 if not vis_ok:
                     render_note = render_note or vnote
                     if vis_closed:
-                        # 用户把窗口关了 = 这条别抓了：直接收口返回，
-                        # 不再等后面的判定；标「窗口关闭」且允许重试。
+                        # 窗口没了（用户手关 / 崩溃 / 程序收尾）= 这条别抓了：
+                        # 直接收口返回，标「窗口关闭」且允许「再试一次」。
+                        # reason 带上窗口层给的实情（谁关的），不再写死"用户手动"。
                         rec["render_note"] = render_note
                         rec["trace"] = trace
                         rec["status"] = "窗口关闭"
-                        rec["reason"] = "用户手动关闭了浏览器窗口，本条未抓完；" \
-                                        "可点「再试一次」重开窗口补抓"
+                        rec["reason"] = (vnote or "浏览器窗口不在了，本条未抓完") + \
+                                        "；可点「再试一次」重开窗口补抓"
                         return rec
             elif visible_fallback and not gate_open and not visible_first:
                 say("    [可见] 窗口已连续失败，本批跳过窗口兜底")
@@ -626,6 +631,7 @@ class Job(object):
             p_txt = os.path.join(self.dir, "txt", name + ".txt")
             p_md = os.path.join(self.dir, "md", name + ".md")
             p_docx = os.path.join(self.dir, "docx", name + ".docx")
+            self._set(i, status="写入文件")
             with open(p_txt, "w", encoding="utf-8") as f:
                 f.write(render_txt(rec))
             with open(p_md, "w", encoding="utf-8") as f:
@@ -760,13 +766,18 @@ class Job(object):
                                     "；翻译失败改出原文：%s" % str(e)[:80]
                     self._set(i, translated=False, reason=rec["reason"])
 
-        # 落盘
+        # 落盘：三段状态，让界面看得到排队过程
+        #   1) 所有成功条目先标「等待写入」——正文已到手，在排队等落盘；
+        #   2) 轮到某条才标「写入文件」——这条正在写 txt/md/Word；
+        #   3) 写完标「完成」。
+        # 早先一上来就给全部条目设「写入文件」，看不出谁在排队、谁在真正写。
         for i, rec in good:
-            self._set(i, status="写入文件")
+            self._set(i, status="等待写入")
         idx_lines = ["# 抓取结果索引", "",
                      "共 %d 篇（%s）" % (len(good), scraped_at), ""]
         rows = []
         for i, rec in good:
+            self._set(i, status="写入文件")
             name = base_name(rec, i)
             p_txt = os.path.join(self.dir, "txt", name + ".txt")
             p_md = os.path.join(self.dir, "md", name + ".md")

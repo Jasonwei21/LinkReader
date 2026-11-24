@@ -35,12 +35,24 @@ import render_fetch as RF
 
 CREATE_NO_WINDOW = 0x08000000
 
+# 窗口关闭提示的统一标记：pipeline 靠它稳定识别"窗口没了"，
+# 不再依赖某句精确文案（崩溃/异常退出走别的分支时文案不同，早先会漏判）。
+CLOSED_MARK = "窗口已关闭"
+
+
+def closed_note():
+    """窗口不在了时给上层的一句提示，带可识别标记。"""
+    return (CLOSED_MARK + "：浏览器窗口不在了（手动关闭 / 程序结束 / 异常退出），"
+            "本条未抓完；可点「再试一次」重开窗口补抓")
+
+
 _STATE = {
     "proc": None,
     "port": 0,
     "profile": "",
     "exe": "",
     "name": "",
+    "app_closing": False,   # 程序主动关窗（停止/任务结束），区别于用户手关
     "lock": threading.Lock(),
 }
 
@@ -216,7 +228,7 @@ def _ensure_browser(cache_dir, log=None):
             try:
                 _http_json("/json/version", port)
                 _STATE.update({"proc": proc, "port": port, "profile": prof,
-                               "exe": exe, "name": name})
+                               "exe": exe, "name": name, "app_closing": False})
                 return port
             except Exception:
                 if proc.poll() is not None:
@@ -230,14 +242,17 @@ def _ensure_browser(cache_dir, log=None):
 
 
 def browser_dead():
-    """可见浏览器进程是否已经不在了（用户手动关掉窗口就是这种情形）。
+    """可见浏览器进程是否已经不在了。
 
-    用户中途把窗口关掉，等价于说"这条别抓了"：调用方据此立即停止等待、
-    把该条记为失败，并且允许用户之后点「再试一次」重开窗口救回。
+    返回 (gone, by_app)：gone=窗口没了；by_app=是程序主动关的（停止/任务结束）。
+    用户中途把窗口关掉（by_app=False），等价于说"这条别抓了"：
+    调用方据此立即停止等待、把该条记为「窗口关闭」，允许「再试一次」救回。
+    程序主动关窗（by_app=True）是正常收尾，不该误报成"用户关的"。
     """
     with _STATE["lock"]:
         p = _STATE.get("proc")
-        return p is None or p.poll() is not None
+        gone = p is None or p.poll() is not None
+        return gone, bool(_STATE.get("app_closing"))
 
 
 def close_browser():
@@ -245,6 +260,7 @@ def close_browser():
     with _STATE["lock"]:
         proc = _STATE.get("proc")
         _STATE["proc"] = None
+        _STATE["app_closing"] = True   # 标记：这次消失是程序主动关的
         if proc is None:
             return
         try:
@@ -334,10 +350,12 @@ def _fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None):
         best, best_len = None, 0
         while time.time() - t0 < max_wait:
             time.sleep(settle)
-            # 用户把窗口关了：他不想等这条了，立刻停止并如实上报，
-            # 上层会把该条标成失败且允许「再试一次」重开窗口。
-            if browser_dead():
-                return None, "用户手动关闭了浏览器窗口"
+            # 窗口没了：用户手关 / 程序收尾 / 崩溃，都立刻停止并如实上报。
+            # 统一带 CLOSED_MARK 标记，pipeline 靠它稳定识别成「窗口关闭」。
+            gone, by_app = browser_dead()
+            if gone:
+                return None, closed_note() if not by_app else \
+                    CLOSED_MARK + "：任务已停止或结束，窗口已收起"
             # 15 秒了页面上还是一个字都没有：地址多半打不开
             # （连接超时、被代理掐断），别把 max_wait 等满。
             if time.time() - t0 > 15 and best_len == 0:

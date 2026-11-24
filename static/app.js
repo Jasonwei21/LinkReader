@@ -36,15 +36,11 @@
   }
 
   const JSON_HEAD = { 'Content-Type': 'application/json' };
-  const BUSY_PREFIX = ['抓取中', '已抓取', '生成摘要', '翻译中', '写入文件'];
+  const BUSY_PREFIX = ['抓取中', '已抓取', '等待写入', '生成摘要', '翻译中', '写入文件'];
 
   function pillOf(it) {
     const s = it.status || '';
-    if (s === '完成' || s === '已抓取') {
-      if (it.needs_review) return { cls: 'review', text: 'OCR 待校' };
-      if (it.via === 'render') return { cls: 'ok', text: '渲染取得' };
-      return { cls: 'ok', text: '完成' };
-    }
+    if (s === '完成') return { cls: 'ok', text: '完成' };
     if (s === '排队中') return { cls: 'queued', text: '排队' };
     for (let i = 0; i < BUSY_PREFIX.length; i++) {
       if (s.indexOf(BUSY_PREFIX[i]) === 0) return { cls: 'busy', text: s };
