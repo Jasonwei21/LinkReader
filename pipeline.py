@@ -178,12 +178,12 @@ def _trace_text(trace):
 def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
               strict=True, log=None, render_fallback=False, ocr_fallback=False,
               visible_fallback=True, stage=None, visible_gate=None, vis_wait=45,
-              visible_first=False):
+              visible_first=False, direct=True, direct_timeout=10):
     """抓一条。返回 rec（ok=True 表示可用）。
 
     两级降级（无头渲染与 OCR 兜底已按用户要求移除）：
-        1. 直接 HTTP 抓取，最多 10 秒
-        2. 直连失败 -> 真实浏览器窗口打开原文取页面（一次一条，串行）
+        1. 直接 HTTP 抓取（可选，默认开；超时 5-30 秒可调）
+        2. 直连失败/关闭 -> 真实浏览器窗口打开原文取页面（一次一条，串行）
     订阅墙/付费墙与机器人校验页一律剔除：识别到就标记跳过，这是硬边界。
 
     stage：每进入一个阶段回调一次（"直连抓取" / "可见窗口"），
@@ -193,6 +193,8 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
     只是为了兼容旧调用，已不起作用。
     visible_first：手动重试用——跳过直连和拦截页早退，直接开真窗口，
     并无视站点熔断；用户点了「再试一次」就是要开窗口救这一条。
+    direct：直连开关；关掉就直接进可见窗口（第一条也先开窗）。
+    direct_timeout：直连超时秒数，5-30 可调。
     """
     rec = {
         "url": url, "ok": False, "status": "", "reason": "", "wall": False,
@@ -218,20 +220,23 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
         trace.append({"n": name, "s": round(time.time() - t0, 1),
                       "ok": bool(ok), "d": (detail or "").strip()[:60]})
 
+    try:
+        direct_timeout = max(5, min(30, int(direct_timeout or 10)))
+    except (TypeError, ValueError):
+        direct_timeout = 10
+    if visible_first:
+        direct = False                 # 手动重试永远直接开真窗口
+
     mark("等待同站名额")
     sem = _slot(host_of(url))
-    # 有兜底时直连只给 10 秒：连不上就交给浏览器，别在"确认连不上"
-    # 上耗时间。两个兜底都没开时才用满 timeout。
-    direct_timeout = min(timeout, 10) if visible_fallback else timeout
     block = ""
-    parsed = None          # visible_first 跳过直连，这里必须先有初值
+    parsed = None          # 关直连时跳过直连，这里必须先有初值
     with sem:
         need = False
-        if not visible_first:
+        if not visible_first and direct:
             mark("直连抓取")
             t0 = time.time()
             raw, info = LF.fetch(url, cache_dir, timeout=direct_timeout)
-            rec["http"] = info.get("status")
             page_raw = raw or ""
             parsed = _analyze(page_raw, url, cache_dir, pdf_fallback, info.get("status")) if raw else None
             note("直连", t0, bool(raw),
@@ -262,7 +267,9 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
                 rec["block"] = block
                 return rec
 
-        if (visible_first or need) and not url.lower().endswith(".pdf"):
+        if (visible_first or need or not direct) and not url.lower().endswith(".pdf"):
+            # 关直连（direct=False）时没有"直连结果"可依：无条件进真窗口，
+            # 用户关掉直连就是明确说"这个站点直接用浏览器看"。
             gate_open = visible_first or (not visible_gate) or visible_gate.allow()
             # ---- 唯一的兜底：真实窗口。一次只开一条（visible_fetch 内部有
             # 全局锁），失败不重试、任务继续下一条；连续 3 次失败后本批
@@ -273,6 +280,7 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
                 t0 = time.time()
                 vh, vnote = VF.fetch(url, cache_dir, log=say, max_wait=vis_wait)
                 vis_ok = False
+                vis_closed = "手动关闭了浏览器窗口" in (vnote or "")
                 if vh:
                     p3 = _analyze(vh, url, cache_dir, pdf_fallback, 200)
                     b3 = LF.detect_block(vh) if p3["chars"] < min_chars else ""
@@ -289,9 +297,18 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
                         vis_ok = True       # 内容没更好，但窗口本身是通的
                 note("可见窗口", t0, vis_ok, vnote)
                 if visible_gate:
-                    visible_gate.record(vis_ok)
+                    visible_gate.record(vis_ok or vis_closed)
                 if not vis_ok:
                     render_note = render_note or vnote
+                    if vis_closed:
+                        # 用户把窗口关了 = 这条别抓了：直接收口返回，
+                        # 不再等后面的判定；标「窗口关闭」且允许重试。
+                        rec["render_note"] = render_note
+                        rec["trace"] = trace
+                        rec["status"] = "窗口关闭"
+                        rec["reason"] = "用户手动关闭了浏览器窗口，本条未抓完；" \
+                                        "可点「再试一次」重开窗口补抓"
+                        return rec
             elif visible_fallback and not gate_open and not visible_first:
                 say("    [可见] 窗口已连续失败，本批跳过窗口兜底")
 
@@ -457,6 +474,58 @@ class Job(object):
         self.t_end = None
         self.lock = threading.Lock()
         self.zpath = None
+        # 暂停 / 停止控制（界面上的「暂停 / 继续 / 停止全部」按钮）：
+        # paused 是开关，worker 在进入每条之前会挂起等它放行；
+        # stop_requested 是单向闸门，一旦置真，剩余条目全部标「已停止」。
+        self._can_run = threading.Event()
+        self._can_run.set()
+        self._stop = threading.Event()
+        self._pause_t = 0.0          # 暂停开始时刻，resume 时累计
+
+    # -- 暂停 / 继续 / 停止
+    def pause(self):
+        with self.lock:
+            if self.state != "running":
+                return False, "任务已经结束，没有可暂停的内容"
+            if not self._can_run.is_set():
+                return False, "任务已经在暂停中"
+            self._can_run.clear()
+            self._pause_t = time.time()
+            return True, "已暂停：正在处理的条目等它跑完，剩下的先挂起"
+
+    def resume(self):
+        with self.lock:
+            if self.state != "running":
+                return False, "任务已经结束"
+            if self._can_run.is_set():
+                return False, "任务不在暂停中"
+            self._pause_t_sum = getattr(self, "_pause_t_sum", 0.0) + (time.time() - self._pause_t)
+            self._can_run.set()
+            return True, "已继续"
+
+    def stop(self):
+        """停止所有任务：等待中的条目标「已停止」，跑完手头这条就收尾落盘。"""
+        with self.lock:
+            if self.state != "running":
+                return False, "任务已经结束"
+            self._stop.set()
+            self._can_run.set()          # 挂起中的 worker 放行去退出
+        VF.close_browser()               # 真窗口也一起收掉
+        return True, "正在停止：已抓到的条目会照常落盘"
+
+    def _gate(self, idx):
+        """暂停 / 停止闸门：每条开始前过一遍。
+
+        返回 False 表示这条不该再跑（已停止）；暂停时挂到这里，
+        直到用户点继续（或停止时被放行退出）。
+        """
+        while True:
+            self._can_run.wait()
+            if self._stop.is_set():
+                self._set(idx, status="已停止", stage="",
+                          reason="用户停止了任务，本条未处理")
+                return False
+            return True
 
     # -- 内部
     def _set(self, idx, **kw):
@@ -467,8 +536,11 @@ class Job(object):
 
     def snapshot(self):
         with self.lock:
-            # 跑完之后用时定住，别让它一直往上涨
+            # 跑完之后用时定住，别让它一直往上涨；暂停时长不计入
             end = self.t_end or time.time()
+            paused = getattr(self, "_pause_t_sum", 0.0)
+            if not self._can_run.is_set():
+                paused += time.time() - self._pause_t
             now = time.time()
             items = []
             for x in self.items:
@@ -480,10 +552,11 @@ class Job(object):
             return {
                 "id": self.id,
                 "state": self.state,
+                "paused": not self._can_run.is_set(),
                 "msg": self.msg,
                 "done": self.done,
                 "total": len(self.urls),
-                "elapsed": round(end - self.t0, 1),
+                "elapsed": round(max(0.0, end - self.t0 - paused), 1),
                 "items": items,
                 "zip": os.path.basename(self.zpath) if self.zpath else "",
             }
@@ -501,8 +574,12 @@ class Job(object):
                 VF.close_browser()
             except Exception:
                 pass
+            with self.lock:
+                stopped = self._stop.is_set()
             if self.state == "running":
-                self.state = "done"
+                self.state = "stopped" if stopped else "done"
+                if stopped:
+                    self.msg = "已停止：处理完手头条目后收工，已抓到的结果照常落盘"
 
     def retry_item(self, idx):
         """手动重试：真窗口重新打开原文再爬一次（用户点了「再试一次」）。
@@ -595,6 +672,8 @@ class Job(object):
 
         def work(pair):
             i, url = pair
+            if not self._gate(i):
+                return
             host = host_of(url)
             if dead.get(host, 0) >= DEAD_LIMIT:
                 self._set(i, status="网络不通", stage="",
@@ -610,7 +689,9 @@ class Job(object):
                             visible_fallback=bool(self.opt.get("visible_fallback", False)),
                             log=getattr(self, "log", None),
                             stage=lambda name: self._set(i, stage=name),
-                            visible_gate=self.vis_gate)
+                            visible_gate=self.vis_gate,
+                            direct=bool(self.opt.get("direct", True)),
+                            direct_timeout=int(self.opt.get("direct_timeout") or 10))
             with self.lock:
                 results[i] = rec
             common = dict(reason=rec["reason"], via=rec.get("via", "http"),

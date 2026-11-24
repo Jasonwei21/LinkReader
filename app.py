@@ -62,6 +62,7 @@ DEFAULT_CFG = {
     "opt": {"workers": 3, "timeout": 40, "min_chars": 400,
             "pdf_fallback": True, "strict": True,
             "visible_fallback": True,
+            "direct": True, "direct_timeout": 10,
             "summary": True, "translate": "off"},
 }
 JOBS = {}
@@ -366,14 +367,16 @@ class Handler(BaseHTTPRequestHandler):
             if llm.get("clear_key"):
                 cfg["llm"]["api_key"] = ""
             opt = data.get("opt") or {}
-            for k in ("workers", "timeout", "min_chars"):
+            for k in ("workers", "timeout", "min_chars", "direct_timeout"):
                 if k in opt:
                     try:
                         cfg["opt"][k] = int(opt[k])
                     except (TypeError, ValueError):
                         pass
+            if "direct_timeout" in cfg["opt"]:
+                cfg["opt"]["direct_timeout"] = max(5, min(30, cfg["opt"]["direct_timeout"]))
             for k in ("pdf_fallback", "strict", "summary",
-                      "visible_fallback"):
+                      "visible_fallback", "direct"):
                 if k in opt:
                     cfg["opt"][k] = bool(opt[k])
             if opt.get("translate") in ("off", "zh", "both"):
@@ -412,9 +415,13 @@ class Handler(BaseHTTPRequestHandler):
             cfg = load_cfg()
             opt = dict(cfg["opt"])
             for k in ("workers", "timeout", "min_chars", "pdf_fallback", "strict",
-                      "visible_fallback", "summary"):
+                      "visible_fallback", "summary", "direct", "direct_timeout"):
                 if k in (data.get("opt") or {}):
                     opt[k] = data["opt"][k]
+            try:
+                opt["direct_timeout"] = max(5, min(30, int(opt["direct_timeout"])))
+            except (TypeError, ValueError):
+                opt["direct_timeout"] = 10
             jopt = data.get("opt") or {}
             mode = jopt.get("translate")
             if mode in ("off", "zh", "both"):
@@ -435,6 +442,17 @@ class Handler(BaseHTTPRequestHandler):
                     JOBS.pop(old, None)
             threading.Thread(target=job.run, daemon=True).start()
             return self._json({"id": job.id, "total": len(urls)})
+
+        if p in ("/api/pause", "/api/resume", "/api/stop"):
+            # 任务控制三键：暂停（正在处理的等它跑完，剩下的挂起）、
+            # 继续、停止（挂起的全部标「已停止」，已抓到的照常落盘）。
+            jid = str((data or {}).get("id") or "")
+            job = JOBS.get(jid)
+            if job is None:
+                return self._json({"error": "只在最近的任务里支持控制，历史任务请重新提交"}, 400)
+            fn = {"pause": job.pause, "resume": job.resume, "stop": job.stop}[p[5:]]
+            ok, msg = fn()
+            return self._json({"ok": ok, "msg": msg}, 200 if ok else 400)
 
         if p == "/api/retry":
             # 手动重试：真窗口重新打开原文再爬一次。只对最近的任务有效。

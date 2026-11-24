@@ -307,6 +307,8 @@ code {
 .chip.run { color: var(--accent-2); border-color: var(--accent-line); background: var(--accent-soft); }
 .chip.done { color: var(--ok); border-color: var(--ok-line); background: var(--ok-soft); }
 .chip.fail { color: var(--bad); border-color: var(--bad-line); background: var(--bad-soft); }
+.chip.pause { color: #b7791f; border-color: rgba(183, 121, 31, .4); background: rgba(183, 121, 31, .12); }
+.chip.stop { color: var(--ink-2); border-color: var(--line-2); background: var(--elev); }
 
 .tb-right {
   margin-left: auto;
@@ -788,6 +790,7 @@ code {
 }
 .pline .arco-progress { flex: 1; }
 .pline .pct { font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.pline .pctl { display: inline-flex; gap: 6px; }
 
 /* 条目卡 */
 .card {

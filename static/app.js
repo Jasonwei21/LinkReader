@@ -50,6 +50,8 @@
       if (s.indexOf(BUSY_PREFIX[i]) === 0) return { cls: 'busy', text: s };
     }
     // 失败类只给分类词，细节交给跟在后面的 reason，避免两句话说同一件事
+    if (s === '窗口关闭') return { cls: 'skip', text: '窗口关闭' };
+    if (s === '已停止') return { cls: 'bad', text: '已停止' };
     if (s.indexOf('墙') >= 0) return { cls: 'skip', text: '订阅墙' };
     if (/拦截|403|429/.test(s)) return { cls: 'skip', text: '反爬拦截' };
     if (/网络不通/.test(s)) return { cls: 'skip', text: '网络不通' };
@@ -222,14 +224,21 @@ https://dialogue.earth/en/digest/...
                          accept=".xlsx,.xlsm,.xls,.csv,.tsv,.txt,.md">
                   <div class="cnt"><b>{{ urls.length }}</b> 条链接</div>
                   <div class="opts">
+                    <a-checkbox v-model="directFB" title="先试直接 HTTP 抓取；关掉则全部直接用可见窗口">直连</a-checkbox>
                     <a-checkbox v-model="strict">严格模式</a-checkbox>
                     <a-checkbox v-model="pdf">PDF 兜底</a-checkbox>
-                    <a-checkbox v-model="visibleFB" title="直连失败（10 秒内连不上 / 被拦截）时，开一个真实浏览器窗口打开原文取页面，一次一条；失败条目可点「再试一次」重开窗口">可见窗口</a-checkbox>
+                    <a-checkbox v-model="visibleFB" title="直连失败时开一个真实浏览器窗口打开原文取页面，一次一条；失败条目可点「再试一次」重开窗口">可见窗口</a-checkbox>
                     <a-checkbox v-model="doSum">摘要</a-checkbox>
                     <a-select v-model="trans" size="small" :popup-container="'body'">
                       <a-option value="off">不翻译</a-option>
                       <a-option value="zh">译成中文</a-option>
                       <a-option value="both">中英对照</a-option>
+                    </a-select>
+                    <a-select v-if="directFB" v-model="directT" size="small"
+                              :popup-container="'body'" class="dt-sel"
+                              title="直连超时秒数（5-30 秒）：超时后转入可见窗口">
+                      <a-option v-for="s in [5, 8, 10, 15, 20, 25, 30]" :key="s" :value="s">
+                        直连 {{ s }}s</a-option>
                     </a-select>
                   </div>
                   <a-button class="go" type="primary" :disabled="!urls.length" @click="start">开始抓取</a-button>
@@ -283,6 +292,11 @@ https://dialogue.earth/en/digest/...
               <div class="pline" v-if="running">
                 <a-progress :percent="pct" :show-text="false" size="small" />
                 <span class="pct">{{ job.done || 0 }}/{{ job.total }}</span>
+                <span class="pctl">
+                  <a-button size="mini" v-if="!job.paused" @click="ctl('pause')">暂停</a-button>
+                  <a-button size="mini" type="primary" v-else @click="ctl('resume')">继续</a-button>
+                  <a-button size="mini" status="danger" @click="ctl('stop')">停止全部</a-button>
+                </span>
               </div>
 
               <article class="card" v-for="it in shownItems" :key="it.idx"
@@ -480,13 +494,14 @@ https://dialogue.earth/en/digest/...
       <label class="fl">并发数
         <a-input-number v-model="cfg.opt.workers" :min="1" :max="6" />
       </label>
-      <label class="fl">超时（秒）
-        <a-input-number v-model="cfg.opt.timeout" :min="10" :max="180" />
+      <label class="fl">直连超时（秒）
+        <a-input-number v-model="directT" :min="5" :max="30" />
       </label>
       <label class="fl">最短字符
         <a-input-number v-model="cfg.opt.min_chars" :min="0" :max="5000" />
       </label>
     </div>
+    <p class="tip">直连超时只作用于 HTTP 直接抓取（5-30 秒）；超时或关掉直连后，抓取转入可见窗口。整个任务的硬超时由「任务超时」控制，不影响这里。</p>
   </div>
 
   <div class="cfg-sec" style="margin-bottom:4px">
@@ -575,6 +590,8 @@ https://dialogue.earth/en/digest/...
       const strict = ref(true);
       const pdf = ref(true);
       const visibleFB = ref(true);
+      const directFB = ref(true);
+      const directT = ref(10);
       const doSum = ref(true);
       const trans = ref('off');
 
@@ -614,8 +631,9 @@ https://dialogue.earth/en/digest/...
       const stateText = computed(() => {
         if (!job.value) return '';
         const s = job.value.state;
-        if (s === 'running') return '运行中';
+        if (s === 'running') return job.value.paused ? '已暂停' : '运行中';
         if (s === 'done') return '已完成';
+        if (s === 'stopped') return '已停止';
         if (s === 'empty') return '全部未收录';
         if (s === 'error') return '出错';
         return job.value.msg || '结束';
@@ -624,8 +642,9 @@ https://dialogue.earth/en/digest/...
       const stateCls = computed(() => {
         if (!job.value) return '';
         const s = job.value.state;
-        if (s === 'running') return 'run';
+        if (s === 'running') return job.value.paused ? 'pause' : 'run';
         if (s === 'done') return 'done';
+        if (s === 'stopped') return 'stop';
         return 'fail';
       });
 
@@ -677,6 +696,8 @@ https://dialogue.earth/en/digest/...
 
       /* 右栏：本次配置 */
       const cfgChecks = computed(() => [
+        { t: directFB.value ? '直连：先试 HTTP（' + directT.value + 's 超时）' : '直连：关闭，全部走窗口',
+          on: !!directFB.value },
         { t: '严格模式：订阅墙与栏目页直接跳过', on: !!strict.value },
         { t: 'PDF 兜底：正文在附件里时去取 PDF', on: !!pdf.value },
         { t: visibleFB.value ? '可见窗口：直连失败时开真窗口，失败可点重试' : '可见窗口：未开启',
@@ -1029,6 +1050,8 @@ https://dialogue.earth/en/digest/...
           if (typeof c.opt.strict === 'boolean') strict.value = c.opt.strict;
           if (typeof c.opt.pdf_fallback === 'boolean') pdf.value = c.opt.pdf_fallback;
           if (typeof c.opt.visible_fallback === 'boolean') visibleFB.value = c.opt.visible_fallback;
+          if (typeof c.opt.direct === 'boolean') directFB.value = c.opt.direct;
+          if (c.opt.direct_timeout) directT.value = c.opt.direct_timeout;
           if (typeof c.opt.summary === 'boolean') doSum.value = c.opt.summary;
           if (c.opt.translate) trans.value = c.opt.translate;
         } catch (e) { /* 首次运行没有 config.json，用默认值 */ }
@@ -1047,9 +1070,11 @@ https://dialogue.earth/en/digest/...
               workers: cfg.opt.workers,
               timeout: cfg.opt.timeout,
               min_chars: cfg.opt.min_chars,
+              direct_timeout: directT.value,
               strict: strict.value,
               pdf_fallback: pdf.value,
               visible_fallback: visibleFB.value,
+              direct: directFB.value,
               summary: doSum.value,
               translate: trans.value,
             },
@@ -1158,6 +1183,8 @@ https://dialogue.earth/en/digest/...
                 strict: strict.value,
                 pdf_fallback: pdf.value,
                 visible_fallback: visibleFB.value,
+                direct: directFB.value,
+                direct_timeout: directT.value,
                 summary: doSum.value,
                 translate: trans.value,
                 workers: cfg.opt.workers,
@@ -1193,6 +1220,12 @@ https://dialogue.earth/en/digest/...
           job.value = s;
           if (s.state === 'running') {
             pollTimer = setTimeout(poll, 900);
+          } else if (s.state === 'stopped') {
+            if (!sel.value) {
+              const first = (s.items || []).filter((x) => x.status === '完成')[0];
+              if (first) sel.value = first.idx;
+            }
+            loadHistory();
           } else if (s.state === 'empty') {
             tip('没有一条抓取成功，看看是不是链接不对或网络受限', 'err');
           } else {
@@ -1205,6 +1238,26 @@ https://dialogue.earth/en/digest/...
           }
         } catch (e) {
           pollTimer = setTimeout(poll, 1600);
+        }
+      }
+
+      /* 暂停 / 继续 / 停止全部：任务控制三键 */
+      async function ctl(action) {
+        if (!job.value) return;
+        const id = job.value.id;
+        try {
+          const r = await api('/api/' + action, {
+            method: 'POST',
+            headers: JSON_HEAD,
+            body: JSON.stringify({ id: id }),
+          });
+          if (r && r.msg) tip(r.msg);
+          if (action === 'stop') {
+            // 停止后赶紧拉一次快照，把「已停止」条目刷出来
+            setTimeout(poll, 300);
+          }
+        } catch (e) {
+          tip(e.message || ('操作失败：' + action), 'err');
         }
       }
 
@@ -1222,6 +1275,7 @@ https://dialogue.earth/en/digest/...
       function canRetry(it) {
         if (it.file || it.status === '完成' || it.status === '已抓取') return false;
         if ((it.status || '').indexOf('抓取中') === 0) return false;
+        if (it.status === '已停止') return false;
         const cls = pillOf(it).cls;
         return cls === 'skip' || cls === 'bad';
       }
@@ -1288,7 +1342,7 @@ https://dialogue.earth/en/digest/...
 
       return {
         icon: ICON, ver: VER, view, filter, q, cfgOpen, raw, strict, pdf,
-        doSum, trans, visibleFB,
+        doSum, trans, visibleFB, directFB, directT, ctl,
         retrying, canRetry, retryItem,
         guideOpen, guideHtml, guideToc, guideActive, guideBody,
         openGuide, onGuideScroll, jumpGuide,

@@ -229,6 +229,17 @@ def _ensure_browser(cache_dir, log=None):
         raise IOError("浏览器调试端口没起来")
 
 
+def browser_dead():
+    """可见浏览器进程是否已经不在了（用户手动关掉窗口就是这种情形）。
+
+    用户中途把窗口关掉，等价于说"这条别抓了"：调用方据此立即停止等待、
+    把该条记为失败，并且允许用户之后点「再试一次」重开窗口救回。
+    """
+    with _STATE["lock"]:
+        p = _STATE.get("proc")
+        return p is None or p.poll() is not None
+
+
 def close_browser():
     """任务结束时收掉窗口，别在用户桌面上留一堆进程。"""
     with _STATE["lock"]:
@@ -303,6 +314,10 @@ def _fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None):
         best, best_len = None, 0
         while time.time() - t0 < max_wait:
             time.sleep(settle)
+            # 用户把窗口关了：他不想等这条了，立刻停止并如实上报，
+            # 上层会把该条标成失败且允许「再试一次」重开窗口。
+            if browser_dead():
+                return None, "用户手动关闭了浏览器窗口"
             # 15 秒了页面上还是一个字都没有：地址多半打不开
             # （连接超时、被代理掐断），别把 max_wait 等满。
             if time.time() - t0 > 15 and best_len == 0:
