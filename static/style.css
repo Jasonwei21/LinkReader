@@ -663,6 +663,15 @@ code {
 }
 .opts .arco-checkbox { font-size: 12px; }
 .opts .arco-select { width: 110px; }
+/* 直连超时：改成自己填数字，窄一点，和前后控件对齐 */
+.dt-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--c-dim);
+}
+.dt-box .arco-input-number { width: 74px; }
 
 .warn {
   margin: 0;

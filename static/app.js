@@ -230,12 +230,10 @@ https://dialogue.earth/en/digest/...
                       <a-option value="zh">译成中文</a-option>
                       <a-option value="both">中英对照</a-option>
                     </a-select>
-                    <a-select v-if="directFB" v-model="directT" size="small"
-                              :popup-container="'body'" class="dt-sel"
-                              title="直连超时秒数（5-30 秒）：超时后转入可见窗口">
-                      <a-option v-for="s in [5, 8, 10, 15, 20, 25, 30]" :key="s" :value="s">
-                        直连 {{ s }}s</a-option>
-                    </a-select>
+                    <span v-if="directFB" class="dt-box" title="直连超时秒数，自己填（5-30 秒）：超时后转入可见窗口">
+                      <a-input-number v-model="directT" size="small" :min="5" :max="30"
+                                      :precision="0" style="width:74px" /> 秒
+                    </span>
                   </div>
                   <a-button class="go" type="primary" :disabled="!urls.length" @click="start">开始抓取</a-button>
                 </div>
@@ -485,10 +483,10 @@ https://dialogue.earth/en/digest/...
 
   <div class="cfg-sec">
     <h3>抓取参数</h3>
-    <p class="tip">低于「最短字符」的页面算没抓到正文，直接跳过。并发数按站点限流，太高容易被拦。</p>
+    <p class="tip">低于「最短字符」的页面算没抓到正文，直接跳过。并发固定为 1：逐条抓，不会被反爬按并发数拦，每条的过程也看得清。</p>
     <div class="grid3">
       <label class="fl">并发数
-        <a-input-number v-model="cfg.opt.workers" :min="1" :max="6" />
+        <a-input-number :model-value="1" disabled />
       </label>
       <label class="fl">直连超时（秒）
         <a-input-number v-model="directT" :min="5" :max="30" />
@@ -607,7 +605,7 @@ https://dialogue.earth/en/digest/...
 
       const cfg = reactive({
         llm: { enabled: false, base_url: '', model: '', has_key: false, api_key_masked: '' },
-        opt: { workers: 3, timeout: 40, min_chars: 400 },
+        opt: { workers: 1, timeout: 40, min_chars: 400 },
       });
 
       const urls = computed(() => extractUrls(raw.value));
@@ -1042,6 +1040,7 @@ https://dialogue.earth/en/digest/...
           const c = await api('/api/config');
           Object.assign(cfg.llm, c.llm || {});
           Object.assign(cfg.opt, c.opt || {});
+          cfg.opt.workers = 1;   // 并发固定 1，老 config 里残留的 3 也不显示
           keyInput.value = '';
           if (typeof c.opt.strict === 'boolean') strict.value = c.opt.strict;
           if (typeof c.opt.pdf_fallback === 'boolean') pdf.value = c.opt.pdf_fallback;
@@ -1063,7 +1062,7 @@ https://dialogue.earth/en/digest/...
               model: (cfg.llm.model || '').trim(),
             },
             opt: {
-              workers: cfg.opt.workers,
+              workers: 1,
               timeout: cfg.opt.timeout,
               min_chars: cfg.opt.min_chars,
               direct_timeout: directT.value,
@@ -1183,7 +1182,7 @@ https://dialogue.earth/en/digest/...
                 direct_timeout: directT.value,
                 summary: doSum.value,
                 translate: trans.value,
-                workers: cfg.opt.workers,
+                workers: 1,
                 timeout: cfg.opt.timeout,
                 min_chars: cfg.opt.min_chars,
               },

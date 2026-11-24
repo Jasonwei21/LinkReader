@@ -670,7 +670,9 @@ class Job(object):
         os.makedirs(os.path.join(self.dir, "docx"), exist_ok=True)
         scraped_at = time.strftime("%Y-%m-%d %H:%M")
         self.scraped_at = scraped_at
-        workers = max(1, min(6, int(self.opt.get("workers") or 3)))
+        # 并发固定 1：逐条抓。可见窗口本来就只能串行，直连也一并对齐，
+        # 既不会被反爬按并发数拦，界面也始终只显示一条在动。
+        workers = 1
         results = {}
         # 站点熔断：同一个站点连续 2 条「直连与渲染都颗粒无收」，
         # 剩下的直接标记跳过，不再每条都耗 30 多秒确认一遍。

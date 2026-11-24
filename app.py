@@ -59,7 +59,7 @@ BEAT_JS = r"""
 DEFAULT_CFG = {
     "llm": {"enabled": False, "base_url": "https://api.openai.com/v1",
             "api_key": "", "model": "gpt-4o-mini"},
-    "opt": {"workers": 3, "timeout": 40, "min_chars": 400,
+    "opt": {"workers": 1, "timeout": 40, "min_chars": 400,
             "pdf_fallback": True, "strict": True,
             "visible_fallback": True,
             "direct": True, "direct_timeout": 10,
@@ -375,6 +375,8 @@ class Handler(BaseHTTPRequestHandler):
                         pass
             if "direct_timeout" in cfg["opt"]:
                 cfg["opt"]["direct_timeout"] = max(5, min(30, cfg["opt"]["direct_timeout"]))
+            # 并发强制为 1：逐条抓，既不被反爬按并发数拦，也让每条过程看得清
+            cfg["opt"]["workers"] = 1
             for k in ("pdf_fallback", "strict", "summary",
                       "visible_fallback", "direct"):
                 if k in opt:
@@ -422,6 +424,8 @@ class Handler(BaseHTTPRequestHandler):
                 opt["direct_timeout"] = max(5, min(30, int(opt["direct_timeout"])))
             except (TypeError, ValueError):
                 opt["direct_timeout"] = 10
+            # 并发强制为 1：不看前端传什么，后端直接定死
+            opt["workers"] = 1
             jopt = data.get("opt") or {}
             mode = jopt.get("translate")
             if mode in ("off", "zh", "both"):
