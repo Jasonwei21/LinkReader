@@ -387,10 +387,3 @@ python -m PyInstaller --noconfirm --onefile --noconsole --name LinkReader ^
 
 单实例：端口写进 `%LOCALAPPDATA%\LinkReader\port.txt`，第二次双击先探这个端口，
 活着就只把浏览器指过去，不会起第二个服务。
-
----
-
-## 十二、注意
-
-抓下来的正文和译文版权归原作者和发布机构所有，导出的每个文件底部都带了这句话。
-自己研究、做语料分析没问题，别原样转发或商用。
