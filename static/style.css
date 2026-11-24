@@ -822,6 +822,20 @@ code {
   gap: 9px;
   padding: 11px 13px 3px;
 }
+/* 条目前的勾选框：和序号顶端对齐，不抢标题位置 */
+.c-head .c-sel {
+  flex: 0 0 auto;
+  margin: 0;
+  padding-top: 2px;
+}
+/* 勾选后的批量操作条 */
+.pick-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.pick-n { font-size: 11px; color: var(--ink-4); }
+.pick-n b { color: var(--ink); font-weight: 600; }
 .c-idx {
   flex: 0 0 auto;
   font-family: var(--mono);

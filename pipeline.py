@@ -500,6 +500,9 @@ class Job(object):
         self._can_run.set()
         self._stop = threading.Event()
         self._pause_t = 0.0          # 暂停开始时刻，resume 时累计
+        # 勾选多条「一键重试」的进度：{total, done, running}
+        self.batch = None
+        self._batch_running = False
 
     # -- 暂停 / 继续 / 停止
     def pause(self):
@@ -580,6 +583,7 @@ class Job(object):
                 "elapsed": round(max(0.0, end - self.t0 - paused), 1),
                 "items": items,
                 "zip": os.path.basename(self.zpath) if self.zpath else "",
+                "batch": self.batch,
             }
 
     def run(self):
@@ -679,6 +683,45 @@ class Job(object):
         finally:
             with self.lock:
                 self._retrying = False
+
+    def retry_batch(self, idxs):
+        """一键重试：把勾选的多条按顺序逐个重试。
+
+        可见窗口本来就是串行的（一条一个窗口、抓完关掉再开下一条），
+        所以这里不并发，一条抓完再下一条。进度写进 self.batch，
+        界面显示「重试中 2/5」。
+        """
+        clean = []
+        for x in (idxs or []):
+            try:
+                clean.append(int(x))
+            except (TypeError, ValueError):
+                pass
+        clean = [x for x in dict.fromkeys(clean) if 1 <= x <= len(self.urls)]
+        if not clean:
+            return False, "没有选中可重试的条目"
+        with self.lock:
+            if self._batch_running:
+                return False, "一键重试已经在跑"
+            self._batch_running = True
+            self.batch = {"total": len(clean), "done": 0, "running": True}
+        try:
+            for idx in clean:
+                # 万一有单条正在重试，等它收口再轮到这个（最多等 3 秒）
+                for _ in range(3):
+                    ok, msg = self.retry_item(idx)
+                    if ok or "还没结束" not in (msg or ""):
+                        break
+                    time.sleep(1.0)
+                with self.lock:
+                    if self.batch:
+                        self.batch["done"] += 1
+        finally:
+            with self.lock:
+                self._batch_running = False
+                if self.batch:
+                    self.batch = dict(self.batch, running=False)
+        return True, ""
 
     def _run(self):
         os.makedirs(os.path.join(self.dir, "txt"), exist_ok=True)

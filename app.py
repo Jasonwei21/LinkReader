@@ -127,7 +127,8 @@ class PastJob(object):
                 "msg": "历史任务 · %s" % (data.get("scraped_at") or self.id),
                 "done": done, "total": len(items), "elapsed": 0,
                 "items": items,
-                "zip": os.path.basename(self.zpath) if self.zpath else ""}
+                "zip": os.path.basename(self.zpath) if self.zpath else "",
+                "batch": None}
 
 
 def past_job(jid):
@@ -479,6 +480,31 @@ class Handler(BaseHTTPRequestHandler):
 
             threading.Thread(target=_do_retry, daemon=True).start()
             return self._json({"ok": True, "idx": idx})
+
+        if p == "/api/retry_batch":
+            # 一键重试：勾选的多条按顺序逐个重试（窗口本来就串行）。
+            # 放后台线程跑，HTTP 立刻返回；进度由 job.snapshot() 的 batch 字段带出。
+            jid = str((data or {}).get("id") or "")
+            job = JOBS.get(jid)
+            if job is None:
+                return self._json({"error": "只在最近的任务里支持重试，历史任务请重新提交链接"}, 400)
+            clean = []
+            for x in ((data or {}).get("indexes") or []):
+                try:
+                    clean.append(int(x))
+                except (TypeError, ValueError):
+                    pass
+            if not clean:
+                return self._json({"error": "没有选中可重试的条目"}, 400)
+
+            def _do_batch(job=job, clean=clean):
+                try:
+                    job.retry_batch(clean)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_do_batch, daemon=True).start()
+            return self._json({"ok": True, "count": len(clean)})
 
         return self._json({"error": "未找到"}, 404)
 

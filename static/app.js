@@ -282,7 +282,17 @@ https://dialogue.earth/en/digest/...
                   </button>
                 </div>
                 <div class="grow"></div>
-                <span class="feed-hint">点条目展开摘要与下载</span>
+                <span class="pick-bar" v-if="picked.length || batchRunning">
+                  <span class="pick-n">已选 <b>{{ picked.length }}</b> 条</span>
+                  <a-button size="mini" type="primary" :loading="batchRunning"
+                            :disabled="!picked.length || batchRunning"
+                            @click="retryPicked">
+                    {{ batchRunning ? batchText : '一键重试' }}
+                  </a-button>
+                  <a-button size="mini" v-if="!batchRunning && picked.length"
+                            @click="clearPick">清空</a-button>
+                </span>
+                <span class="feed-hint" v-else>点条目展开摘要与下载</span>
               </div>
 
               <div class="pline" v-if="running">
@@ -297,6 +307,11 @@ https://dialogue.earth/en/digest/...
 
               <article class="card" v-for="it in shownItems" :key="it.idx"
                        :class="{open: sel === it.idx}" @click="sel = it.idx">                <div class="c-head">
+                  <a-checkbox class="c-sel"
+                              :model-value="picked.indexOf(it.idx) >= 0"
+                              :disabled="!canRetry(it) || batchRunning"
+                              :title="canRetry(it) ? '勾选后可一键重试' : '这条已完成或在处理中，无需重试'"
+                              @change="() => togglePick(it.idx)" @click.stop />
                   <span class="c-idx">{{ pad(it.idx) }}</span>
                   <span class="c-title" :class="{faint: !isOk(it)}">{{ it.title || shortUrl(it.url) }}</span>
                   <span class="pill" :class="pillOf(it).cls">{{ pillOf(it).text }}</span>
@@ -594,6 +609,8 @@ https://dialogue.earth/en/digest/...
       const job = ref(null);
       const sel = ref(0);
       const history = ref([]);
+      const picked = ref([]);          // 勾选待重试的条目序号
+      let batchTimer = null;
 
       const saving = ref(false);
       const testing = ref(false);
@@ -1135,6 +1152,7 @@ https://dialogue.earth/en/digest/...
         try {
           const s = await api('/api/job/' + id);
           job.value = s;
+          picked.value = [];
           view.value = 'work';
           filter.value = 'all';
           q.value = '';
@@ -1199,6 +1217,7 @@ https://dialogue.earth/en/digest/...
             })),
           };
           sel.value = 0;
+          picked.value = [];
           filter.value = 'all';
           q.value = '';
           poll();
@@ -1311,6 +1330,53 @@ https://dialogue.earth/en/digest/...
         }, 2000);
       }
 
+      /* 勾选 + 一键重试：把勾中的条目交给后端按顺序逐条重试（窗口本来串行） */
+      const batchRunning = computed(() => {
+        const b = job.value && job.value.batch;
+        return !!(b && b.running);
+      });
+      const batchText = computed(() => {
+        const b = job.value && job.value.batch;
+        return b ? ('重试中 ' + (b.done || 0) + '/' + (b.total || 0)) : '重试中';
+      });
+
+      function togglePick(idx) {
+        const k = picked.value.indexOf(idx);
+        if (k >= 0) picked.value.splice(k, 1);
+        else picked.value.push(idx);
+      }
+      function clearPick() { picked.value = []; }
+
+      async function retryPicked() {
+        if (!job.value || batchRunning.value) return;
+        // 只提交此刻仍可重试的（避免勾了之后状态变了）
+        const list = picked.value.filter((idx) => {
+          const it = (job.value.items || []).find((x) => x.idx === idx);
+          return it && canRetry(it);
+        });
+        if (!list.length) { picked.value = []; return; }
+        try {
+          await api('/api/retry_batch', {
+            method: 'POST', headers: JSON_HEAD,
+            body: JSON.stringify({ id: job.value.id, indexes: list }),
+          });
+        } catch (e) {
+          alert('一键重试失败：' + (e.message || e));
+          return;
+        }
+        picked.value = [];
+        // 批量在后端一条条跑，这里持续刷新，直到 batch.running 变 false
+        clearInterval(batchTimer);
+        batchTimer = setInterval(async () => {
+          if (!job.value) { clearInterval(batchTimer); return; }
+          try {
+            const s = await api('/api/job/' + job.value.id);
+            job.value = s;
+            if (!s.batch || !s.batch.running) clearInterval(batchTimer);
+          } catch (e) { /* 网络抖一下就等下一轮 */ }
+        }, 1500);
+      }
+
       function openFile(it, kind) {
         if (!job.value) return;
         let rel = it.file;
@@ -1341,6 +1407,7 @@ https://dialogue.earth/en/digest/...
         icon: ICON, ver: VER, view, filter, q, cfgOpen, raw, strict, pdf,
         doSum, trans, visibleFB, directFB, directT, ctl,
         retrying, canRetry, retryItem,
+        picked, batchRunning, batchText, togglePick, clearPick, retryPicked,
         guideOpen, guideHtml, guideToc, guideActive, guideBody,
         openGuide, onGuideScroll, jumpGuide,
         job, sel, history, urls, running, pct, stateText, stateCls, counts,
