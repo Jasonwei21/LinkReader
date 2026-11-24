@@ -107,26 +107,33 @@ def _looks_scripted(raw):
 
 
 class _VisGate(object):
-    """可见窗口熔断：窗口连续 3 次没取到内容，本批剩余条目不再开窗口。
+    """可见窗口熔断：**按站点**连续 3 次没取到内容，这个站点后面的条目不再开窗口。
+
+    早先是全局计数：Akamai 的站连着失败 3 次，连后面 Cloudflare 的站也一起
+    不再开窗口——那些站开窗其实能成，被无辜连坐，用户看到的就是"Akamai
+    不行之后 Cloudflare 的也全不行"。现在每个 host 各算各的，互不牵连。
 
     窗口是串行的（一次一条），一条卡 45 秒、几十条都卡校验时，
-    后面的条目每条都要排队等一轮 45 秒，整批会被拖死。
+    同一站点的后续条目每条都要排队等一轮 45 秒，整批会被拖死，所以要熔断。
     记失败要"真失败"：窗口压根没起来、没取到内容、或取回来的还是拦截页。
-    取到正文就算成功，计数复位。
+    取到正文就算成功，该站计数复位。
     """
 
     def __init__(self, limit=3):
         self.lock = threading.Lock()
-        self.bad = 0
+        self.bad = {}          # host -> 连续失败次数
         self.limit = limit
 
-    def allow(self):
+    def allow(self, host=""):
         with self.lock:
-            return self.bad < self.limit
+            return self.bad.get(host, 0) < self.limit
 
-    def record(self, ok):
+    def record(self, host, ok):
         with self.lock:
-            self.bad = 0 if ok else self.bad + 1
+            if ok:
+                self.bad.pop(host, None)
+            else:
+                self.bad[host] = self.bad.get(host, 0) + 1
 
 
 def _analyze(raw, url, cache_dir, pdf_fallback=True, status=None):
@@ -228,8 +235,9 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
     if visible_first:
         direct = False                 # 手动重试永远直接开真窗口
 
+    host = host_of(url)
     mark("等待同站名额")
-    sem = _slot(host_of(url))
+    sem = _slot(host)
     block = ""
     why = ""
     parsed = None          # 关直连时跳过直连，这里必须先有初值
@@ -267,7 +275,7 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
         if (visible_first or need or not direct) and not url.lower().endswith(".pdf"):
             # 关直连（direct=False）时没有"直连结果"可依：无条件进真窗口，
             # 用户关掉直连就是明确说"这个站点直接用浏览器看"。
-            gate_open = visible_first or (not visible_gate) or visible_gate.allow()
+            gate_open = visible_first or (not visible_gate) or visible_gate.allow(host)
             # ---- 唯一的兜底：真实窗口。一次只开一条（visible_fetch 内部有
             # 全局锁），失败不重试、任务继续下一条；连续 3 次失败后本批
             # 关闭窗口兜底（_VisGate）。手动重试（visible_first）不受熔断
@@ -302,7 +310,7 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
                 note("可见窗口", t0, vis_ok,
                      ((why + "；") if why and not visible_first else "") + (vnote or ""))
                 if visible_gate:
-                    visible_gate.record(vis_ok or vis_closed)
+                    visible_gate.record(host, vis_ok or vis_closed)
                 if not vis_ok:
                     render_note = render_note or vnote
                     if vis_closed:
@@ -317,7 +325,7 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
                         rec["reason"] = base if hint in base else base + "；" + hint
                         return rec
             elif visible_fallback and not gate_open and not visible_first:
-                say("    [可见] 窗口已连续失败，本批跳过窗口兜底")
+                say("    [可见] 本站点窗口已连续失败，后续同站条目跳过窗口兜底")
 
     rec["render_note"] = render_note
     rec["trace"] = trace
@@ -614,7 +622,9 @@ class Job(object):
         try:
             url = self.urls[i]
             say = getattr(self, "log", None)
-            self._set(i, status="抓取中", stage="准备")
+            # _set 收的是 1-based 序号；这里 i 是 0-based 数组下标，
+            # 传 i 会写到前一条（重试第 9 条变成跑第 8 条），必须传 idx。
+            self._set(idx, status="抓取中", stage="准备")
             rec = fetch_one(url, self.cache,
                             timeout=int(self.opt.get("timeout") or 40),
                             min_chars=int(self.opt.get("min_chars") or 400),
@@ -622,16 +632,16 @@ class Job(object):
                             strict=bool(self.opt.get("strict", True)),
                             visible_fallback=True,
                             log=say,
-                            stage=lambda name: self._set(i, stage=name),
+                            stage=lambda name: self._set(idx, stage=name),
                             visible_progress=lambda n, st: self._set(
-                                i, stage_extra=("正文 %d 字" % n) if n else "等页面加载"),
+                                idx, stage_extra=("正文 %d 字" % n) if n else "等页面加载"),
                             visible_gate=None, vis_wait=120,
                             visible_first=True)
             common = dict(reason=rec["reason"], via=rec.get("via", "http"),
                           needs_review=bool(rec.get("needs_review")),
                           trace=rec.get("trace") or [], stage="", stage_extra="")
             if not rec["ok"]:
-                self._set(i, status=rec["status"], title=rec.get("title") or "",
+                self._set(idx, status=rec["status"], title=rec.get("title") or "",
                           chars=rec.get("chars", 0), **common)
                 return False, rec["reason"]
 
@@ -642,7 +652,7 @@ class Job(object):
             p_txt = os.path.join(self.dir, "txt", name + ".txt")
             p_md = os.path.join(self.dir, "md", name + ".md")
             p_docx = os.path.join(self.dir, "docx", name + ".docx")
-            self._set(i, status="写入文件")
+            self._set(idx, status="写入文件")
             with open(p_txt, "w", encoding="utf-8") as f:
                 f.write(render_txt(rec))
             with open(p_md, "w", encoding="utf-8") as f:
@@ -655,7 +665,7 @@ class Job(object):
                 has_docx = True
             except Exception:
                 pass
-            self._set(i, status="完成", title=rec["title"], chars=rec["chars"],
+            self._set(idx, status="完成", title=rec["title"], chars=rec["chars"],
                       file=os.path.relpath(p_txt, self.dir).replace("\\", "/"),
                       docx=os.path.basename(p_docx) if has_docx else "",
                       docx_file=("docx/%s.docx" % name) if has_docx else "",
