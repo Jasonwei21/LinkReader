@@ -264,8 +264,14 @@ def close_browser():
 
 
 # ---------------------------------------------------------------- 取页面
-def _new_tab(port, url):
-    """开一个标签页，返回 (target_id, ws_url)。"""
+def _new_tab(port, url="about:blank"):
+    """开一个标签页，返回 (target_id, ws_url)。
+
+    一律先开 about:blank，再由调用方用 Page.navigate 显式导航。
+    早期版本把目标 url 塞进 /json/new?<url> 让 Chrome 自己导航，
+    随后又用 Page.navigate 导航同一个地址，两次导航互相竞争，
+    偶发把页面卡在 about:blank（用户看到的就是「空白窗口」）。
+    """
     q = urllib.parse.quote(url, safe="")
     req = urllib.request.Request("http://127.0.0.1:%d/json/new?%s" % (port, q),
                                  method="PUT")
@@ -302,13 +308,27 @@ def _fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None):
     tid = ws_url = None
     ws = None
     try:
-        tid, ws_url = _new_tab(port, url)
+        tid, ws_url = _new_tab(port, "about:blank")
         if not ws_url:
             return None, "开标签页失败"
         ws = _WS(ws_url, timeout=30)
         _cdp(ws, 1, "Page.enable")
         _cdp(ws, 2, "Runtime.enable")
-        _cdp(ws, 3, "Page.navigate", {"url": url}, timeout=30)
+        # 把新标签提到前台：浏览器启动时那个初始 about:blank 页还在，
+        # 不 bringToFront 的话用户看到的就是空白页，以为没抓到东西。
+        try:
+            _cdp(ws, 3, "Page.bringToFront", timeout=6)
+        except Exception:
+            pass
+
+        def navigate(mid):
+            r = _cdp(ws, mid, "Page.navigate", {"url": url}, timeout=30)
+            return (r.get("result") or {}).get("errorText") or ""
+
+        nav_err = navigate(4)
+        if nav_err and "ERR_ABORTED" not in nav_err:
+            return None, "窗口导航失败：%s" % nav_err[:60]
+        nav_retries = 0
 
         t0 = time.time()
         best, best_len = None, 0
@@ -325,11 +345,19 @@ def _fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None):
             try:
                 # 轮询求值必须短超时：死页签上 CDP 会一直挂到超时，
                 # 用默认 20 秒的话，一轮循环就是 30 多秒，15 秒判据形同虚设。
+                href = _eval(ws, 14, "location.href", timeout=6) or ""
                 state = _eval(ws, 10, "document.readyState", timeout=6)
                 n = _eval(ws, 11, "(document.body?document.body.innerText.length:0)", timeout=6) or 0
                 title = _eval(ws, 12, "document.title", timeout=6) or ""
             except Exception:
                 continue
+            # 导航竞态补救：过了几秒还停在 about:blank，说明导航没落地，
+            # 主动再导航一次（最多两次），别让用户在空白页干等到超时。
+            if href in ("about:blank", "") and time.time() - t0 > 3:
+                if nav_retries < 2:
+                    nav_retries += 1
+                    navigate(40 + nav_retries)
+                    continue
             # 连接打不开时窗口里是 Edge 的错误页——有文字，所以上面的
             # "无内容"判据抓不住它。文本很短时探一眼正文，认出错误页
             # （"无法访问此页面" / ERR_xxx / can't reach）就立刻放弃。
@@ -354,9 +382,16 @@ def _fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None):
                 time.time() - t0, (best or ("?", 0, ""))[0], best_len,
                 ((best or ("", 0, ""))[2] or "")[:40]))
 
+        final_href = ""
+        try:
+            final_href = _eval(ws, 21, "location.href", timeout=6) or ""
+        except Exception:
+            pass
         html = _eval(ws, 20, "document.documentElement.outerHTML", timeout=30)
         if not html:
             return None, "没取到页面内容（可能还在校验中）"
+        if final_href in ("about:blank", "") and best_len == 0:
+            return None, "窗口停留在 about:blank，导航未落地"
         if best_len < min_text:
             return html, "页面文本仅 %d 字，可能仍在机器人校验" % best_len
         return html, ""
