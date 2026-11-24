@@ -309,8 +309,9 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
                         rec["render_note"] = render_note
                         rec["trace"] = trace
                         rec["status"] = "窗口关闭"
-                        rec["reason"] = (vnote or "浏览器窗口不在了，本条未抓完") + \
-                                        "；可点「再试一次」重开窗口补抓"
+                        hint = "可点「再试一次」重开窗口补抓"
+                        base = (vnote or "浏览器窗口不在了，本条未抓完").strip()
+                        rec["reason"] = base if hint in base else base + "；" + hint
                         return rec
             elif visible_fallback and not gate_open and not visible_first:
                 say("    [可见] 窗口已连续失败，本批跳过窗口兜底")
@@ -576,7 +577,8 @@ class Job(object):
             self.msg = "任务异常：" + traceback.format_exc(limit=2).splitlines()[-1]
         finally:
             self.t_end = time.time()
-            # 可见窗口是整批复用的，跑完必须收掉，否则桌面上会留一个浏览器
+            # 每条可见抓取用完就自己关窗了；这里再兜底收一次，
+            # 防止异常路径下桌面上残留浏览器
             try:
                 VF.close_browser()
             except Exception:

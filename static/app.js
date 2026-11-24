@@ -223,7 +223,7 @@ https://dialogue.earth/en/digest/...
                     <a-checkbox v-model="directFB" title="先试直接 HTTP 抓取；关掉则全部直接用可见窗口">直连</a-checkbox>
                     <a-checkbox v-model="strict">严格模式</a-checkbox>
                     <a-checkbox v-model="pdf">PDF 兜底</a-checkbox>
-                    <a-checkbox v-model="visibleFB" title="直连失败时开一个真实浏览器窗口打开原文取页面，一次一条；失败条目可点「再试一次」重开窗口">可见窗口</a-checkbox>
+                    <a-checkbox v-model="visibleFB" title="直连失败时新开一个真实浏览器窗口打开原文，抓到完整正文就关掉再开下一条，一次一条串行；失败条目可点「再试一次」重开窗口">可见窗口</a-checkbox>
                     <a-checkbox v-model="doSum">摘要</a-checkbox>
                     <a-select v-model="trans" size="small" :popup-container="'body'">
                       <a-option value="off">不翻译</a-option>

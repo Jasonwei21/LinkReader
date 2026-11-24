@@ -47,16 +47,17 @@ def closed_note():
 
 
 _STATE = {
-    "proc": None,
+    "proc": None,           # 当前这条抓取的浏览器进程（每条一个新窗口）
     "port": 0,
     "profile": "",
     "exe": "",
     "name": "",
-    "app_closing": False,   # 程序主动关窗（停止/任务结束），区别于用户手关
+    "app_closing": False,   # 程序主动关窗（抓完/停止/任务结束），区别于用户手关
     "lock": threading.Lock(),
 }
 
-# 可见抓取一次只做一条（并发会被机器人校验限流，实测 3 并只有 1 条过）
+# 可见抓取一次只做一条：一条一个窗口、抓完整篇关掉再开下一条。
+# 并发既会被机器人校验限流（实测 3 并只有 1 条过），也让用户看不清过程。
 _VIS_LOCK = threading.Semaphore(1)
 
 
@@ -197,17 +198,36 @@ def _http_json(path, port, timeout=5):
         return json.loads(r.read().decode("utf-8", "ignore"))
 
 
-def _ensure_browser(cache_dir, log=None):
-    """确保有一个可见浏览器在跑。整批复用同一个实例，不会每条弹一个窗口。"""
+def _launch_browser(cache_dir, log=None):
+    """为「一条」抓取启动一个全新的可见窗口。
+
+    一条一个窗口：启动 → 抓到完整正文 → 关窗口 → 再开下一条。
+    整批由 _VIS_LOCK 串行，用户桌面上任一时刻只有一个抓取窗口，
+    能看清「这条在抓什么、抓完关掉、再开下一条」的节奏。
+
+    上一条是强杀收尾的，profile 里可能残留 Singleton 锁；不清理的话
+    新实例会以为已有实例在跑，直接退出（rc=0，调试端口起不来）。
+    """
     with _STATE["lock"]:
-        p = _STATE["proc"]
-        if p is not None and p.poll() is None:
-            return _STATE["port"]
+        # 兜底：万一上一条还残留（异常路径没关干净），先收掉再开。
+        stale = _STATE.get("proc")
+        if stale is not None and stale.poll() is None:
+            try:
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(stale.pid)],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               creationflags=CREATE_NO_WINDOW, timeout=10)
+            except Exception:
+                pass
         exe, name = RF.find_browser()
         if not exe:
             raise IOError("本机没找到 Edge / Chrome")
         prof = os.path.join(cache_dir, "_visible_profile")
         os.makedirs(prof, exist_ok=True)
+        for fn in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+            try:
+                os.remove(os.path.join(prof, fn))
+            except OSError:
+                pass
         port = _free_port()
         args = [exe,
                 "--remote-debugging-port=%d" % port,
@@ -218,11 +238,10 @@ def _ensure_browser(cache_dir, log=None):
                 "--window-size=1100,820", "--window-position=140,90",
                 "about:blank"]
         if log:
-            log("    [可见] 启动 %s（真实窗口）" % name)
+            log("    [可见] 新开窗口 %s" % name)
         proc = subprocess.Popen(args, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL)
-        # 等调试端口起来
         t0 = time.time()
         while time.time() - t0 < 25:
             try:
@@ -297,12 +316,12 @@ def _new_tab(port, url="about:blank"):
 
 
 def _work_tab(port):
-    """拿到浏览器里可复用的那个标签，返回 (target_id, ws_url)。
+    """拿到本窗口里唯一那个工作标签，返回 (target_id, ws_url)。
 
-    浏览器以 about:blank 启动，天然带一个 page 标签。整批抓取复用它，
-    只用 Page.navigate 切换地址——这样浏览器里始终只有一个标签，
-    不会再出现"第二个标签是 about:blank"（早先每条 _new_tab 新建，
-    新标签先停在 about:blank，navigate 一失败就露出空白页）。
+    每条抓取都是一个新开的窗口，以 about:blank 启动、天然带一个 page 标签。
+    就用这一个标签、只用 Page.navigate 切到目标地址——所以窗口里始终只有
+    一个标签，不会再出现"第二个标签是 about:blank"（早先每条 _new_tab
+    新建，新标签先停在 about:blank，navigate 一失败就露出空白页）。
 
     只有标签被关光（一个 page 都没有）才新建一个兜底。
     """
@@ -325,10 +344,11 @@ def _close_tab(port, tid):
 
 
 def fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None):
-    """在可见窗口里打开 url，等页面真正出内容，返回 (html, note)。
+    """在一个全新的可见窗口里打开 url，抓完就关，返回 (html, note)。
 
-    串行执行：实测同一个窗口并发开 3 个标签，机器人校验只放行 1 条，
-    所以这里排队，其它抓取链路仍按并发跑。
+    一条一个窗口、串行执行：实测并发开 3 个标签机器人校验只放行 1 条，
+    而且并发会让用户看不清每条在抓什么。这里排队，每条独占一个窗口，
+    抓到完整正文（或判定失败）后由 finally 关掉，下一条再新开。
     """
     with _VIS_LOCK:
         return _fetch(url, cache_dir, min_text=min_text, max_wait=max_wait,
@@ -337,7 +357,7 @@ def fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None):
 
 def _fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None):
     try:
-        port = _ensure_browser(cache_dir, log=log)
+        port = _launch_browser(cache_dir, log=log)
     except Exception as e:
         return None, "可见窗口起不来：%s" % e
 
@@ -442,9 +462,11 @@ def _fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None):
     except Exception as e:
         return None, "可见窗口取页面失败：%s" % str(e)[:80]
     finally:
-        # 只断开本条抓取用的 WebSocket，不关闭标签。
-        # 标签是整批复用的（_work_tab），要留到任务结束由 close_browser()
-        # 统一收掉——这样页面会一直显示到抓完、下一条或收工，不会抓取中途
-        # 一闪就关。
         if ws is not None:
             ws.close()
+        # 一条抓完（拿到完整正文 / 判定失败 / 被用户关掉）就关掉这个窗口，
+        # 下一条 fetch 会 _launch_browser 新开一个。用户看到的就是
+        # 「开这条的窗口 → 抓完关掉 → 再开下一条」一条一条来。
+        # 关窗统一走 close_browser()，它会置 app_closing=True，
+        # pipeline 据此不会把程序正常关窗误判成「用户手动关闭」。
+        close_browser()
