@@ -9,6 +9,10 @@
 
 **不想装 Python？** 到 [Releases](https://github.com/Jasonwei21/LinkReader/releases/latest) 下载 `LinkReader.exe`，双击即用。
 
+![LinkReader 主界面](docs/screenshots/01-new-task.png)
+
+> 截图为 1.1.1 实际界面，随版本会有细微调整。
+
 ---
 
 ## 一、启动
@@ -271,6 +275,32 @@ out/20261118-214018/
 ---
 
 ## 十、界面与技术栈
+
+### 抓取结果
+
+每条一个卡片，点开看摘要、关键词和下载入口；右侧是本次配置与逐条进度。
+
+![抓取结果](docs/screenshots/02-results.png)
+
+### 勾选与一键重试
+
+条目左侧可以打勾，顶部出现「已选 N 条 · 一键重试」，按顺序逐条重试，窗口一条一条来。
+
+![勾选与一键重试](docs/screenshots/05-pick-retry.png)
+
+### 设置
+
+大模型配置与抓取参数。并发固定为 1，直连超时可以直接填数字（5–30 秒）。
+
+![设置](docs/screenshots/03-settings.png)
+
+### 历史任务
+
+跑过的任务按时间分组留在左栏，随时点回去看结果、下载或重试。
+
+![历史任务](docs/screenshots/04-history.png)
+
+### 技术与配色
 
 界面用 **Vue 3 + Arco Design Vue**，**日间 / 夜间双主题**，配色是 Claude 的暖调：
 夜间底 `#100F0E`、面板 `#171614`、主色陶土橙 `#D97757`、正文 `#ECE7E0`；

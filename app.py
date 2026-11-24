@@ -207,7 +207,7 @@ def mask(cfg):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "LinkReader/1.1.0"
+    server_version = "LinkReader/1.1.1"
 
     def log_message(self, fmt, *a):
         pass  # 静音访问日志，终端只留关键提示
