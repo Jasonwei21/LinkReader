@@ -296,6 +296,26 @@ def _new_tab(port, url="about:blank"):
     return t.get("id"), t.get("webSocketDebuggerUrl")
 
 
+def _work_tab(port):
+    """拿到浏览器里可复用的那个标签，返回 (target_id, ws_url)。
+
+    浏览器以 about:blank 启动，天然带一个 page 标签。整批抓取复用它，
+    只用 Page.navigate 切换地址——这样浏览器里始终只有一个标签，
+    不会再出现"第二个标签是 about:blank"（早先每条 _new_tab 新建，
+    新标签先停在 about:blank，navigate 一失败就露出空白页）。
+
+    只有标签被关光（一个 page 都没有）才新建一个兜底。
+    """
+    try:
+        pages = _http_json("/json/list", port)
+        for p in pages:
+            if p.get("type") == "page" and p.get("webSocketDebuggerUrl"):
+                return p.get("id"), p.get("webSocketDebuggerUrl")
+    except Exception:
+        pass
+    return _new_tab(port, "about:blank")
+
+
 def _close_tab(port, tid):
     try:
         urllib.request.urlopen("http://127.0.0.1:%d/json/close/%s" % (port, tid),
@@ -321,17 +341,17 @@ def _fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None):
     except Exception as e:
         return None, "可见窗口起不来：%s" % e
 
-    tid = ws_url = None
     ws = None
     try:
-        tid, ws_url = _new_tab(port, "about:blank")
+        # 复用浏览器里那一个标签，不再每条新建——否则浏览器里会出现
+        # 第二个标签、且它先停在 about:blank，正是用户看到的"第二个空白页"。
+        tid, ws_url = _work_tab(port)
         if not ws_url:
             return None, "开标签页失败"
         ws = _WS(ws_url, timeout=30)
         _cdp(ws, 1, "Page.enable")
         _cdp(ws, 2, "Runtime.enable")
-        # 把新标签提到前台：浏览器启动时那个初始 about:blank 页还在，
-        # 不 bringToFront 的话用户看到的就是空白页，以为没抓到东西。
+        # 把工作标签提到前台，用户看到的就是正在抓取的页面。
         try:
             _cdp(ws, 3, "Page.bringToFront", timeout=6)
         except Exception:
@@ -341,9 +361,11 @@ def _fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None):
             r = _cdp(ws, mid, "Page.navigate", {"url": url}, timeout=30)
             return (r.get("result") or {}).get("errorText") or ""
 
+        # 导航返回一个 errorText 不代表真失败（ERR_ABORTED 是重定向/重复
+        # 导航的正常现象；页面也可能正在加载）。早先一有 errorText 就
+        # return，标签随即被 finally 关掉——用户看到"窗口 1 秒就关了"。
+        # 现在记录错误但继续轮询，交给下面的正文判定决定成败。
         nav_err = navigate(4)
-        if nav_err and "ERR_ABORTED" not in nav_err:
-            return None, "窗口导航失败：%s" % nav_err[:60]
         nav_retries = 0
 
         t0 = time.time()
@@ -407,16 +429,20 @@ def _fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None):
             pass
         html = _eval(ws, 20, "document.documentElement.outerHTML", timeout=30)
         if not html:
-            return None, "没取到页面内容（可能还在校验中）"
+            return None, "没取到页面内容（可能还在校验中）" + \
+                ("（导航提示：%s）" % nav_err[:40] if nav_err else "")
         if final_href in ("about:blank", "") and best_len == 0:
-            return None, "窗口停留在 about:blank，导航未落地"
+            return None, "窗口停留在 about:blank，导航未落地" + \
+                ("（导航提示：%s）" % nav_err[:40] if nav_err else "")
         if best_len < min_text:
             return html, "页面文本仅 %d 字，可能仍在机器人校验" % best_len
         return html, ""
     except Exception as e:
         return None, "可见窗口取页面失败：%s" % str(e)[:80]
     finally:
+        # 只断开本条抓取用的 WebSocket，不关闭标签。
+        # 标签是整批复用的（_work_tab），要留到任务结束由 close_browser()
+        # 统一收掉——这样页面会一直显示到抓完、下一条或收工，不会抓取中途
+        # 一闪就关。
         if ws is not None:
             ws.close()
-        if tid:
-            _close_tab(port, tid)
