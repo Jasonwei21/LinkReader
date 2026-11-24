@@ -230,6 +230,7 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
     mark("等待同站名额")
     sem = _slot(host_of(url))
     block = ""
+    why = ""
     parsed = None          # 关直连时跳过直连，这里必须先有初值
     with sem:
         need = False
@@ -247,25 +248,20 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
             if parsed is None:
                 need, why = True, info.get("note") or "无响应"
             elif block:
-                # 直连就撞上 Access Denied / 机器人校验页：直接剔除，
-                # 不再进兜底。真窗口去试这类页基本也是同一张拦截页，
-                # 每条白等一轮窗口时间不值得（用户实测后拍板）。
-                # 手动重试（visible_first）不走这条：它就是要开窗口救。
-                need = False
-                say("    [剔除] %s 机器人校验拦截，未取到正文" % block)
+                # 直连撞上 Access Denied / 机器人校验页：真窗口往往能拿到正文
+                # （apnews 实测直连 403、可见窗口 3 秒取到 8000+ 字），
+                # 所以这里不再直接剔除，转给可见窗口再试一次。
+                # 只有窗口也没拿出正文时，最后才标「机器人验证」。
+                need = True
+                why = "「%s」校验页" % block
+                say("    [转窗口] 直连 %s，交给可见窗口打开原文" % why)
+                mark("转可见窗口")
             elif parsed["wall"]:
                 need = False                                  # 订阅墙：绝不渲染
             elif info.get("status") in (403, 429):
                 need, why = True, "HTTP %s" % info["status"]
             elif parsed["chars"] < min_chars and _looks_scripted(page_raw):
                 need, why = True, "正文仅 %d 字符，页面里有脚本" % parsed["chars"]
-
-            if block:
-                rec["status"] = "机器人验证"
-                rec["reason"] = "「%s」机器人校验拦截，未取到正文；可在自己浏览器打开后另存 HTML 再导入" % block
-                rec["trace"] = trace
-                rec["block"] = block
-                return rec
 
         if (visible_first or need or not direct) and not url.lower().endswith(".pdf"):
             # 关直连（direct=False）时没有"直连结果"可依：无条件进真窗口，
@@ -290,6 +286,7 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
                     b3 = LF.detect_block(vh) if p3["chars"] < min_chars else ""
                     if b3:
                         block = b3          # 取回来的还是拦截页：算窗口失败
+                        vis_ok = False
                     elif p3["chars"] > (parsed["chars"] if parsed else 0):
                         parsed = p3
                         page_raw = vh
@@ -299,7 +296,8 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
                         vis_ok = True
                     else:
                         vis_ok = True       # 内容没更好，但窗口本身是通的
-                note("可见窗口", t0, vis_ok, vnote)
+                note("可见窗口", t0, vis_ok,
+                     ((why + "；") if why and not visible_first else "") + (vnote or ""))
                 if visible_gate:
                     visible_gate.record(vis_ok or vis_closed)
                 if not vis_ok:
@@ -324,9 +322,13 @@ def fetch_one(url, cache_dir, timeout=40, min_chars=400, pdf_fallback=True,
     # 上层据此对同一站点熔断，避免一屏链接每条都白等一轮超时。
     rec["net_dead"] = bool(info.get("local_net_fail") and parsed is None)
 
-    if block and parsed is None:
+    if block:
         rec["status"] = "机器人验证"
-        rec["reason"] = "「%s」机器人校验拦截，未取到正文；可在自己浏览器打开后另存 HTML 再导入" % block
+        tried = "直连和可见窗口" if any(t.get("n") == "可见窗口" for t in trace) else "直连"
+        rec["reason"] = ("「%s」机器人校验拦截：%s都没拿到正文，本条剔除；"
+                         "可在浏览器打开后另存 HTML 再导入，或点「再试一次」") % (block, tried)
+        rec["trace"] = trace
+        rec["block"] = block
         return rec
 
     if parsed is None:

@@ -407,8 +407,10 @@ def _fetch(url, cache_dir, min_text=800, max_wait=45, settle=1.5, log=None):
                 pl = probe.lower()
                 if ("ERR_" in probe or "无法访问此页面" in probe
                         or "此网页无法" in probe or "can't reach this page" in pl
-                        or "hmmm…can't reach" in pl):
-                    return None, "窗口里是浏览器错误页（%s）" % (title or "ERR")[:60]
+                        or "hmmm…can't reach" in pl
+                        or "access denied" in pl or "forbidden" in pl
+                        or "机器人验证" in probe):
+                    return None, "窗口里是拦截/错误页（%s）" % (title or "ERR")[:60]
             if n > best_len:
                 best_len = n
                 best = (state, n, title)
