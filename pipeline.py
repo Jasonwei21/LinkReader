@@ -483,7 +483,7 @@ class Job(object):
         self.msg = ""
         self.items = [{"idx": i + 1, "url": u, "status": "排队中", "title": "",
                        "chars": 0, "summary": "", "reason": "", "file": "",
-                       "translated": False, "site": "", "date": "",
+                       "translated": False, "site": "", "date": "", "lang": "",
                        "keywords": [], "summary_how": "", "docx_file": "",
                        "via": "http", "needs_review": False,
                        "stage": "", "stage_t": 0.0, "trace": []}
@@ -674,7 +674,7 @@ class Job(object):
                       docx=os.path.basename(p_docx) if has_docx else "",
                       docx_file=("docx/%s.docx" % name) if has_docx else "",
                       site=rec.get("site") or "", date=rec.get("date") or "",
-                      **common)
+                      lang=rec.get("lang") or "", **common)
             if say:
                 say("    [重试] 第 %d 条成功：%d 字符" % (idx, rec["chars"]))
             return True, rec["reason"]
@@ -866,7 +866,8 @@ class Job(object):
                       file=os.path.relpath(p_txt, self.dir).replace("\\", "/"),
                       docx=os.path.basename(p_docx) if has_docx else "",
                       docx_file=("docx/%s.docx" % name) if has_docx else "",
-                      site=rec.get("site") or "", date=rec.get("date") or "")
+                      site=rec.get("site") or "", date=rec.get("date") or "",
+                      lang=rec.get("lang") or "")
             idx_lines.append("%d. %s — %s %s · %d 字符 · 摘要 %d 字" % (
                 i, rec["title"][:70] or rec["url"], rec.get("site"),
                 rec.get("date") or "无日期", rec["chars"], len(rec.get("summary") or "")))
