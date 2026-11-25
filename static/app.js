@@ -325,6 +325,8 @@ https://dialogue.earth/en/digest/...
                   <template v-if="it.date"><i class="sp"></i><span>{{ it.date }}</span></template>
                   <template v-if="it.chars"><i class="sp"></i>
                     <span>{{ it.chars.toLocaleString() }} 字符</span></template>
+                  <template v-if="it.lang && it.lang !== 'zh'"><i class="sp"></i>
+                    <span>{{ langLabel(it.lang) }}</span></template>
                   <template v-if="it.translated"><i class="sp"></i><span>已译</span></template>
                   <template v-if="it.site && !sameHost(it)"><i class="sp"></i>
                     <span>{{ it.site }}</span></template>
@@ -941,6 +943,11 @@ https://dialogue.earth/en/digest/...
 
       function pad(n) { return String(n).padStart(2, '0'); }
 
+      /* 条目元信息里的语言标签：日语是 ja，值得单独标出来 */
+      function langLabel(lang) {
+        return { ja: '日语', en: '英文', ru: '俄文' }[lang] || lang;
+      }
+
       function isOk(it) { return pillOf(it).cls === 'ok'; }
 
       function trim60(s) { return trim(s, 60); }
@@ -1417,7 +1424,7 @@ https://dialogue.earth/en/digest/...
         pickFile, onPick, onDropOver, onDrop,
         go, openCfg, select, newTask, start, downloadZip, openFile,
         saveCfg, testLLM, openHist, relTime, sameHost,
-        pillOf, detailOf, shortUrl, pad, isOk, trim60, stageOf,
+        pillOf, detailOf, shortUrl, pad, isOk, trim60, stageOf, langLabel,
       };
     },
   };
