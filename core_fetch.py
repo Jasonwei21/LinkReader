@@ -59,9 +59,26 @@ def _decode(body, charset=None):
             body = zlib.decompress(body)
         except Exception:
             pass
-    for enc in (charset, "utf-8", "gb18030", "latin-1"):
-        if not enc:
+    if charset:
+        try:
+            return body.decode(charset)
+        except (UnicodeDecodeError, LookupError):
+            pass
+    try:
+        return body.decode("utf-8")
+    except (UnicodeDecodeError, LookupError):
+        pass
+    # 日语老站（Shift_JIS / EUC-JP）必须在 gb18030 之前试：
+    # gb18030 字节覆盖极广，会把 Shift_JIS 字节"成功"解成中文乱码且不报错。
+    # 用假名做判据，避免把 GBK 中文误判成日语。
+    for enc in ("shift_jis", "euc_jp"):
+        try:
+            s = body.decode(enc)
+            if len(re.findall(r"[\u3040-\u30ff]", s)) >= 5:
+                return s
+        except (UnicodeDecodeError, LookupError):
             continue
+    for enc in ("gb18030", "latin-1"):
         try:
             return body.decode(enc)
         except (UnicodeDecodeError, LookupError):
@@ -738,9 +755,12 @@ def guess_lang(text):
     if not text:
         return ""
     letters = len(re.findall(r"[A-Za-z]", text))
+    kana = len(re.findall(r"[\u3040-\u30ff]", text))   # 假名：日语独有，先判
     cjk = len(re.findall(r"[\u4e00-\u9fff]", text))
     cyr = len(re.findall(r"[\u0400-\u04ff]", text))
     total = max(1, letters + cjk + cyr)
+    if kana >= 5 and kana / total > 0.10:
+        return "ja"
     if cjk / total > 0.25:
         return "zh"
     if cyr / total > 0.25:
